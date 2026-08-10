@@ -18,6 +18,7 @@ features/voice_call_events.py, features/dashboard/.
 Run:  uv run python app.py   (see README for the one-time Twilio setup)
 """
 
+import os
 import uuid
 from typing import Annotated, Any
 
@@ -340,6 +341,44 @@ async def start_reminder_call(to_number: str) -> str:
 
 app = FastAPI(title="TAC Payment Reminder Demo")
 app.include_router(web.create_router(start_reminder_call, tac.config))
+
+
+class TrustProxyHTTPS:
+    """Force ``X-Forwarded-Proto: https`` on incoming HTTP and WebSocket scopes.
+
+    Twilio signs the full request URL, and TAC validates that signature on
+    /twiml, the relay action callback, the call-event callbacks and the /ws
+    upgrade. TAC rebuilds the URL from ``X-Forwarded-Proto`` (see
+    tac/server/signature_validation.py ``_build_url``), preferring that header
+    over the ASGI scheme.
+
+    Some proxy chains terminate TLS and then forward over plain HTTP, arriving
+    with ``X-Forwarded-Proto: http``. TAC then validates against
+    ``http://your-domain/...`` while Twilio signed ``https://...``, and every
+    callback 403s. Observed on the twl dev box, where Caddy terminates TLS and
+    Traefik overwrites the header: four consecutive
+    ``POST /twilio/call-events/status -> 403 Forbidden``.
+
+    Enable with ``TRUST_PROXY_HTTPS=1`` when the app sits behind a TLS-
+    terminating proxy. Not needed under ngrok, which forwards the header
+    correctly. Pure ASGI rather than a FastAPI ``@app.middleware("http")``
+    because that flavor never sees ``websocket`` scopes — and the
+    ConversationRelay socket needs this just as much as the webhooks.
+    """
+
+    def __init__(self, app: Any) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Any, receive: Any, send: Any) -> None:
+        if scope["type"] in ("http", "websocket"):
+            headers = [(k, v) for k, v in scope["headers"] if k != b"x-forwarded-proto"]
+            headers.append((b"x-forwarded-proto", b"https"))
+            scope = dict(scope, headers=headers)
+        await self.app(scope, receive, send)
+
+
+if os.getenv("TRUST_PROXY_HTTPS") == "1":
+    app.add_middleware(TrustProxyHTTPS)
 
 # TACFastAPIServer registers TAC's webhook + websocket routes in its
 # constructor, so it must run at import time — `uvicorn app:app --reload`
