@@ -42,4 +42,15 @@ EXPOSE 8000
 # channel exists (tac/server/fastapi_server.py:142). The container therefore
 # crash-loops until `twl env set` provides the full environment — that is the
 # intended signal, not a bug.
-CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+#
+# --proxy-headers + --forwarded-allow-ips=*: REQUIRED behind the twl proxy.
+# Twilio signs the full request URL, and TAC validates that signature on
+# /twiml, the relay action callback, the call-event callbacks, and the /ws
+# upgrade. uvicorn only honors X-Forwarded-Proto from IPs in
+# --forwarded-allow-ips, which defaults to 127.0.0.1 — but the proxy reaches the
+# container from the docker network (172.22.0.2). Without this, uvicorn rebuilds
+# the URL as http://, the signature never matches what Twilio signed over
+# https://, and every Twilio callback gets a 403. Observed live: four
+# "POST /twilio/call-events/status -> 403 Forbidden" before this flag was added.
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000", \
+     "--proxy-headers", "--forwarded-allow-ips", "*"]
