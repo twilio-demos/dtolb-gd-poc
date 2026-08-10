@@ -13,6 +13,7 @@ found the same day while provisioning the Twilio account.
 | ⚠️ Fixed locally, **needs re-publish to Twilio** | #8 |
 | 📋 Open — a decision, not a bug | #11 (content), #12 (branding) |
 | ⏳ Blocked on Twilio approval | #13 (A2P 10DLC → SMS leg) |
+| ℹ️ Won't fix — documented workaround | #14 (dual-deploy softphone identity) |
 
 Every fix was adversarially reviewed by a second pass; #1–#10 each verified
 against the installed SDK source rather than assumed. **None of it has been
@@ -255,3 +256,19 @@ Two caveats worth knowing:
 The service has `use_inbound_webhook_on_number: true`, so inbound replies still
 route to the number's own webhook — which is what TAC wires up. No conflict with
 the #5 SMS-reply handling.
+
+### 14. Two deployments collide on the `browser-agent` softphone identity
+The demo now runs in two places — the twl dev box
+(`https://gd-poc.twl.dtolb.com`) and locally behind ngrok. They coexist fine for
+outbound calls, because TAC builds the ConversationRelay `wss://` URL and the SMS
+payment link **per call** from that instance's `TWILIO_VOICE_PUBLIC_DOMAIN`.
+
+But both landing pages register as Twilio Client `browser-agent`
+(`web.py: BROWSER_AGENT_IDENTITY`), and `studio-flow.json` dials that literal
+name. With both pages open, a handoff rings an ambiguous target — quite possibly
+the browser you are not presenting from.
+
+**Workaround: keep one landing page open at a time.** Deliberately not fixed:
+making the identity an env var also needs a second Studio flow (or a flow
+variable) because the Connect Call To widget dials a literal client name, which is
+more moving parts than the demo earns.

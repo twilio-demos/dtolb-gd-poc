@@ -13,11 +13,12 @@ only serve the demo UI and glue:
                     pushes it to the live feed, shows a fake payment page
 """
 
+import os
 from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 from twilio.jwt.access_token import AccessToken
@@ -52,6 +53,16 @@ def create_router(
 
     @router.post("/api/call")
     async def trigger_call(body: CallRequest) -> dict[str, str]:
+        # This route places a REAL billed call to whatever number it is given,
+        # and the demo has no auth by design. That is fine on localhost or a
+        # throwaway ngrok URL, but on a stable public domain it is an open
+        # robocall endpoint. DEMO_ALLOWED_NUMBERS caps the blast radius:
+        # comma-separated E.164 numbers, exact match. Unset (local dev) = any
+        # number, i.e. the original behavior.
+        allowed = [n.strip() for n in os.getenv("DEMO_ALLOWED_NUMBERS", "").split(",") if n.strip()]
+        if allowed and body.phone.strip() not in allowed:
+            raise HTTPException(403, "Number not in DEMO_ALLOWED_NUMBERS.")
+
         call_sid = await start_call(body.phone)
         return {"call_sid": call_sid}
 
