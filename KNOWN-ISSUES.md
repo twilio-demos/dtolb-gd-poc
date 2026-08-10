@@ -11,7 +11,7 @@ found the same day while provisioning the Twilio account.
 |---|---|
 | ✅ Fixed & reviewed | #1, #2, #3, #4, #5, #6, #7, #9, #10 |
 | ⚠️ Fixed locally, **needs re-publish to Twilio** | #8 |
-| ✅ Fixed & verified on the live deployment | #15 (proxy signature 403s) |
+| ✅ Fixed & verified on the live deployment | #15 (proxy signature 403s), #16 (softphone SDK URL) |
 | ✅ Resolved during provisioning | #11 (KB content), #12 (branding) |
 | ⏳ Blocked on Twilio approval | #13 (A2P 10DLC → SMS leg) |
 | ℹ️ Won't fix — documented workaround | #14 (dual-deploy softphone identity) |
@@ -307,3 +307,40 @@ Verified on the live deployment, both directions:
 | forged signature | 403 — validation still enforced |
 | `wss://…/ws` (real Twilio) | **101 Connected** |
 | `ws://…/ws` | 403 |
+
+### 16. Softphone dead: Voice JS SDK 2.x is not on sdk.twilio.com — ✅ FIXED 2026-08-10
+The landing page header read **"softphone error: Twilio is not defined"**, so the
+handoff had nothing to ring. (The message itself came from the #9 error handler
+doing its job — without it this would have been silent.)
+
+Root cause was the `<script src>`, not the JavaScript. The page loaded
+`https://sdk.twilio.com/js/voice/releases/2.12.1/twilio.min.js`, which returns
+**403 `AccessDenied` from `AmazonS3`** — and so does *every* version under
+`/js/voice/`. Not the corporate proxy: the cert issuer is Amazon and the body is
+S3's own XML error (S3 answers AccessDenied for a missing key). Only the retired
+**Client 1.x** lives on that CDN, under `/js/client/`, which returns 200.
+
+Twilio's Voice JS SDK docs offer **npm only** (`npm install @twilio/voice-sdk`).
+Unlike the *Video* SDK, which documents a `sdk.twilio.com` script tag, Voice 2.x
+publishes no CDN URL — so that path never existed. It looks right because Video
+uses a similar path and Client 1.x used `/js/client/`.
+
+**Fix:** load the published npm package from a CDN, pinned exactly:
+
+```html
+<script src="https://cdn.jsdelivr.net/npm/@twilio/voice-sdk@2.18.3/dist/twilio.min.js"></script>
+```
+
+No JS changes were needed — the UMD bundle ends with
+`root.Twilio=root.Twilio||{}; Twilio.Device=Twilio.Device||Voice.Device`, so the
+existing `new Twilio.Device(...)` works. Pinned rather than `@2` so the page
+cannot change under the demo.
+
+Verified in a real browser against the deployment: `typeof Twilio === "object"`,
+`Twilio.Device` is a constructor, and the header reaches
+**"softphone ready (browser-agent)"** — i.e. it actually registered with Twilio.
+
+**Gotcha while verifying:** the browser served a *cached* copy of the page and
+kept showing the old error after the fix deployed, even though `curl` showed the
+new tag. Hard-refresh (or add a query string) before concluding a front-end fix
+did not work.

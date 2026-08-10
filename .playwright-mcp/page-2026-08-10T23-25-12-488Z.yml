@@ -1,0 +1,18 @@
+- generic [active] [ref=f2e1]:
+  - banner [ref=f2e2]:
+    - heading "👟 Owl Shoes — Payment Reminder Agent" [level=1] [ref=f2e3]
+    - generic [ref=f2e4]:
+      - text: Twilio Agent Connect demo ·
+      - generic [ref=f2e5]: softphone connecting…
+  - main [ref=f2e7]:
+    - generic [ref=f2e8]:
+      - heading "1 · Trigger the outbound call" [level=2] [ref=f2e9]
+      - generic [ref=f2e10]:
+        - textbox "+15551234567" [ref=f2e11]
+        - button "Call me" [ref=f2e12] [cursor=pointer]
+    - generic [ref=f2e13]:
+      - heading "2 · Live call feed (SSE)" [level=2] [ref=f2e14]
+      - list [ref=f2e15]:
+        - listitem [ref=f2e16]:
+          - time [ref=f2e17]: "--:--:--"
+          - text: Waiting for events…
