@@ -109,6 +109,42 @@ uv sync
 uv run python app.py
 ```
 
+### Two ways to be publicly reachable
+
+TAC needs a public HTTPS domain for Twilio's webhooks and the ConversationRelay
+`wss://` socket. Both options below work, and they can run at the same time —
+`TWILIO_VOICE_PUBLIC_DOMAIN` is read **per call** to build the websocket URL and
+the SMS payment link, so each instance uses its own domain.
+
+**A. Local + ngrok** — fast iteration, domain changes on every restart.
+
+```bash
+ngrok http 8000                     # put the hostname in .env, no scheme
+uv run python app.py
+```
+
+**B. The twl dev box** — stable domain, survives restarts.
+
+```bash
+twl deploy                          # builds on the Pi (linux/arm64)
+twl env set TWILIO_VOICE_PUBLIC_DOMAIN=<app>.twl.dtolb.com \
+            TRUST_PROXY_HTTPS=1 \
+            DEMO_ALLOWED_NUMBERS=+1... # your own mobile
+twl logs                            # watch the call happen
+```
+
+Three things are non-obvious about option B, all learned by breaking them:
+
+- **`TRUST_PROXY_HTTPS=1` is mandatory.** The proxy terminates TLS and forwards
+  plain HTTP, so Twilio's signature check fails on *everything* — webhooks and the
+  voice websocket. See KNOWN-ISSUES #15.
+- **`DEMO_ALLOWED_NUMBERS` matters more here.** `POST /api/call` places real billed
+  calls and has no auth; a stable public URL is discoverable in a way an ngrok URL
+  isn't.
+- **Only open one landing page at a time.** Both register the Twilio Client
+  identity `browser-agent`, so a handoff to two open pages is ambiguous
+  (KNOWN-ISSUES #14).
+
 Open **http://localhost:8000**, wait for "softphone ready", enter your mobile
 number, click **Call me**, and answer the phone.
 

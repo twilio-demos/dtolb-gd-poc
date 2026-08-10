@@ -11,6 +11,7 @@ found the same day while provisioning the Twilio account.
 |---|---|
 | ✅ Fixed & reviewed | #1, #2, #3, #4, #5, #6, #7, #9, #10 |
 | ⚠️ Fixed locally, **needs re-publish to Twilio** | #8 |
+| ✅ Fixed & verified on the live deployment | #15 (proxy signature 403s) |
 | ✅ Resolved during provisioning | #11 (KB content), #12 (branding) |
 | ⏳ Blocked on Twilio approval | #13 (A2P 10DLC → SMS leg) |
 | ℹ️ Won't fix — documented workaround | #14 (dual-deploy softphone identity) |
@@ -266,3 +267,43 @@ the browser you are not presenting from.
 making the identity an env var also needs a second Studio flow (or a flow
 variable) because the Connect Call To widget dials a literal client name, which is
 more moving parts than the demo earns.
+
+## Deployment (found 2026-08-10 running on the twl dev box)
+
+### 15. TLS-terminating proxy broke every Twilio signature check — ✅ FIXED 2026-08-10
+Only reproducible when deployed, not locally. On `https://gd-poc.twl.dtolb.com`
+the live log showed four consecutive
+`POST /twilio/call-events/status -> 403 Forbidden`.
+
+Twilio signs the full request URL. TAC validates that signature on `/twiml`, the
+relay action callback, the call-event callbacks **and the `/ws` upgrade** — so
+this broke the entire voice path, not just status events.
+
+Diagnosed by signing candidate URLs and seeing which one the deployed app would
+accept: it accepted a signature computed over `http://gd-poc.twl.dtolb.com/...`
+and rejected `https://...`. Caddy terminates TLS on the twl box and Traefik then
+overwrites `X-Forwarded-Proto` with `http`.
+
+`uvicorn --proxy-headers` **cannot** fix this: `_build_url`
+(`tac/server/signature_validation.py`) reads the `X-Forwarded-Proto` header
+directly and prefers it over the ASGI scheme, so rewriting the scheme is not
+enough — the header itself has to change.
+
+**Fix:** `TrustProxyHTTPS` in `app.py`, a pure-ASGI middleware gated on
+`TRUST_PROXY_HTTPS=1` that forces the header to `https`. Pure ASGI rather than
+`@app.middleware("http")` because that flavor never sees `websocket` scopes, and
+the ConversationRelay socket needs it just as much. The WS validator maps
+`https` -> `wss`, which is what Twilio signs there.
+
+Leave `TRUST_PROXY_HTTPS` **unset under ngrok** — ngrok forwards the header
+correctly, and forcing it would be wrong if you ever served plain HTTP.
+
+Verified on the live deployment, both directions:
+
+| Signed as | Result |
+|---|---|
+| `https://…/twilio/call-events/status` (real Twilio) | 200 |
+| `http://…` (the old broken reconstruction) | 403 |
+| forged signature | 403 — validation still enforced |
+| `wss://…/ws` (real Twilio) | **101 Connected** |
+| `ws://…/ws` | 403 |
