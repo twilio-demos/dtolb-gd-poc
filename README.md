@@ -32,6 +32,9 @@ landing page ──POST /api/call──▶ app.py ──TAC VoiceChannel──�
 - **`web.py`** — landing-page routes: trigger call, SSE stream, softphone token, tracked `/pay/<id>` link.
 - **`events.py`** — 40-line SSE hub.
 - **`static/index.html`** — the landing page (vanilla JS + Twilio Voice JS SDK).
+- **`Dockerfile`** — for deploying to the `twl` dev box (linux/arm64).
+- **[`KNOWN-ISSUES.md`](KNOWN-ISSUES.md)** — 15 findings and their current status.
+  **Read this before trusting any part of the demo**; a few things are still open.
 
 The voice handoff is the neat part: the LLM calls `connect_to_human_agent`,
 TAC finishes speaking the goodbye sentence, ends the ConversationRelay
@@ -40,20 +43,43 @@ dials the `browser-agent` client, ringing the landing page.
 
 ## Setup (one time, ~15 minutes)
 
-Prereqs: Python 3.10+, [uv](https://docs.astral.sh/uv/), [ngrok](https://ngrok.com),
-a Twilio account with a voice+SMS-capable phone number, an OpenAI API key.
+Prereqs: Python 3.10+, [uv](https://docs.astral.sh/uv/), a Twilio account with a
+voice+SMS-capable phone number, an OpenAI API key, and **one way to be publicly
+reachable** — either [ngrok](https://ngrok.com) or the `twl` dev box (see
+[Two ways to be publicly reachable](#two-ways-to-be-publicly-reachable)).
 
 ### 1. TAC services (Conversation Memory + Configuration)
 
-The TAC repo ships a setup wizard that creates everything and prints your env values:
+The TAC repo ships a setup wizard (`git clone …/twilio-agent-connect-python && make setup`,
+then follow `http://localhost:8080`). Or create the two resources directly — this
+is scriptable and what was actually used here. Both calls are **async**: they
+return `202` with an operation URL you must poll.
 
 ```bash
-git clone https://github.com/twilio/twilio-agent-connect-python.git
-cd twilio-agent-connect-python
-make setup     # opens http://localhost:8080, follow the wizard
+# A memory store. Note displayName allows NO spaces here: ^[a-zA-Z0-9-]+$
+curl -X POST "https://memory.twilio.com/v1/ControlPlane/Stores" \
+  -u "$TWILIO_API_KEY:$TWILIO_API_SECRET" -H "Content-Type: application/json" \
+  -d '{"displayName":"my-demo-store","description":"Profiles for the demo"}'
+# -> poll the returned statusUrl for status:COMPLETED to get mem_store_…
+
+# A conversation configuration pointing at that store.
+curl -X POST "https://conversations.twilio.com/v2/ControlPlane/Configurations" \
+  -u "$TWILIO_API_KEY:$TWILIO_API_SECRET" -H "Content-Type: application/json" \
+  -d '{"displayName":"My Demo","description":"Payment reminder demo",
+       "conversationGroupingType":"GROUP_BY_PROFILE",
+       "memoryStoreId":"mem_store_…",
+       "memoryExtractionEnabled":false,
+       "channelSettings":{}}'
+# -> conv_configuration_… goes in .env as TWILIO_CONVERSATION_CONFIGURATION_ID
 ```
 
-Copy the generated values into this project's `.env` (next step).
+Two deliberate choices there:
+
+- **`channelSettings: {}` — no VOICE capture rules.** TAC drives
+  `<ConversationRelay>` actively; adding passive voice capture on the same call
+  bills speech-to-text **twice**.
+- **`memoryExtractionEnabled: false`** — both channels run the default
+  `memory_mode="never"`, so extraction would be cost with no demo benefit.
 
 ### 2. Environment
 
@@ -61,16 +87,13 @@ Copy the generated values into this project's `.env` (next step).
 cp .env.example .env   # then fill it in
 ```
 
-### 3. ngrok
+### 3. A public domain
 
-TAC needs a public domain for Twilio's webhooks and the ConversationRelay websocket:
-
-```bash
-ngrok http 8000
-```
-
-Put the hostname (e.g. `abc123.ngrok.app` — no `https://`) in `.env` as
-`TWILIO_VOICE_PUBLIC_DOMAIN`. It's also the domain in the SMS payment link.
+TAC needs a public HTTPS domain for Twilio's webhooks and the ConversationRelay
+`wss://` socket. Put the bare hostname (no scheme, no trailing slash) in `.env`
+as `TWILIO_VOICE_PUBLIC_DOMAIN` — it's also the domain in the SMS payment link.
+See [Two ways to be publicly reachable](#two-ways-to-be-publicly-reachable) for
+ngrok vs. the twl dev box, and the extra env var the latter requires.
 
 ### 4. Studio flow (rings the browser on handoff)
 
@@ -150,8 +173,14 @@ has not re-registered the backend, so **every route returns 404, then 502** whil
 the app itself logs a clean startup. It clears on its own — but don't deploy
 minutes before demoing, and poll `GET /` until it returns 200 before you trust it.
 
-Open **http://localhost:8000**, wait for "softphone ready", enter your mobile
-number, click **Call me**, and answer the phone.
+### Then
+
+Open the landing page — **http://localhost:8000** when running locally, or
+`https://<app>.twl.dtolb.com` when deployed. Wait for **"softphone ready"**,
+enter your mobile number, click **Call me**, and answer the phone.
+
+If you set `DEMO_ALLOWED_NUMBERS`, only the numbers listed there will be dialed;
+anything else returns 403 and the feed shows an error line.
 
 ### Suggested demo script
 
