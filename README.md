@@ -91,11 +91,14 @@ human. Only a real handoff carries `HandoffData`, so the Split gates on it and t
 
 1. Twilio Console → **Enterprise Knowledge** → create a knowledge base
    (name: *Owl Shoes Renewal FAQ*).
-2. Upload [`knowledge/norton-lifelock-faq.md`](knowledge/norton-lifelock-faq.md)
-   as a **Text** source and let it index. Strip the leading HTML comment first —
-   an indexed disclaimer becomes its own chunk and wins the search (KNOWN-ISSUES
-   #11). `knowledge/renewal-faq.md` is the older Owl Shoes version, kept for
-   reference.
+2. Upload [`knowledge/renewal-faq.md`](knowledge/renewal-faq.md) as a **Text**
+   source and let it index. Two things matter for retrieval quality, both learned
+   the hard way (KNOWN-ISSUES #11):
+   - **Drop the title and the "Load this document into…" preamble.** An indexed
+     instruction chunk competes with real answers and can win the search.
+   - **Rewrite each `## Question` + body as one self-contained
+     `Question: … Answer: …` block.** Otherwise the chunker separates a question
+     from its answer and the wrong section comes back.
 3. Put the knowledge base ID (`know_knowledgebase_…`) in `.env` as
    `TWILIO_KNOWLEDGE_BASE_ID`.
 

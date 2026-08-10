@@ -11,7 +11,7 @@ found the same day while provisioning the Twilio account.
 |---|---|
 | ✅ Fixed & reviewed | #1, #2, #3, #4, #5, #6, #7, #9, #10 |
 | ⚠️ Fixed locally, **needs re-publish to Twilio** | #8 |
-| 📋 Open — a decision, not a bug | #11 (content), #12 (branding) |
+| ✅ Resolved during provisioning | #11 (KB content), #12 (branding) |
 | ⏳ Blocked on Twilio approval | #13 (A2P 10DLC → SMS leg) |
 | ℹ️ Won't fix — documented workaround | #14 (dual-deploy softphone identity) |
 
@@ -170,58 +170,52 @@ global history dict does the real work. Fix: either set
 
 ## Content / account wiring (found 2026-08-10 during provisioning)
 
-### 11. Norton help-center crawl yields only nav chrome — KB is synthetic
-Twilio Enterprise Knowledge **can** crawl
-`https://support.norton.com/lifelock/en/us/home/current/help-center` — the
-source reached `status: COMPLETED` with no error — but at `crawlDepth: 3` it
-indexed **1 chunk / 579 chars**, consisting entirely of menu labels
-("Help Center Search … Top FAQ … Identity assistance"). No article bodies were
-captured, and no linked articles were followed. That signature is consistent
-with a JS-rendered help center: the crawler receives the static shell and the
-real content never appears in the HTML. Not diagnosed further on purpose —
-confirming it would mean scraping the site ourselves, which defeats the point of
-using the managed crawler.
+### 11. Twilio's crawler got only nav chrome from an SPA help center — ✅ RESOLVED
+Historical, kept because the retrieval lessons generalize. We briefly pointed the
+knowledge base at
+`https://support.norton.com/lifelock/en/us/home/current/help-center` as a **Web**
+source. Twilio's crawler reported `status: COMPLETED` with no error, but at
+`crawlDepth: 3` indexed **1 chunk / 579 chars** of pure menu text
+("Help Center Search … Top FAQ … Identity assistance") — no article bodies, no
+linked pages followed. That is the signature of a JS-rendered help center: the
+crawler gets the static shell. Not diagnosed further on purpose; confirming it
+would mean scraping the site ourselves, which defeats the point of a managed
+crawler.
 
-Worse than useless while present: as the only chunk it matched *every* query at
-score 0.8, so the knowledge tool fed identity-theft menu text to the LLM for
-every renewal question.
+It was actively harmful while present: as the only chunk it matched *every* query
+at score 0.8, feeding identity-theft menu text to the LLM for every renewal
+question.
 
-**Current state:** that web source was deleted. The KB is now loaded from
-`knowledge/norton-lifelock-faq.md` — **10 synthetic FAQs**, Text source, 8
-chunks, verified 6/6 on the demo's question set. Real Norton policy it is not;
-do not quote its numbers as authoritative.
+**Current state:** the KB holds a single Text source built from
+`knowledge/renewal-faq.md` (Owl Shoes), verified **7/7** on the demo's question
+set. All Norton sources and files are deleted.
 
-Two retrieval lessons learned the hard way, both worth keeping if the content is
+Two retrieval lessons that cost real debugging time — keep them if the content is
 ever rewritten:
-- **Never put a disclaimer in the indexed body.** The first upload had a
-  markdown blockquote warning at the top; it became its own chunk and won
-  "When does my subscription renew?" at score 1.0 — i.e. Ava would have read
-  "⚠️ Synthetic content, not real Norton policy" aloud to the caller. The
-  warning now lives in an HTML comment that is stripped before upload, with an
-  assertion that it never leaks.
-- **Make each Q&A self-contained.** With `## heading` + body, the chunker split
-  headings from answers and "what happens if my payment fails" returned the
-  *update payment method* chunk. Restating the question inside each answer
-  paragraph fixed all mismatches.
+- **Never put a preamble or disclaimer in the indexed body.** A leading
+  "Load this document into…" note or a "⚠️ synthetic content" warning becomes its
+  own chunk and *wins* the semantic search — one earlier upload answered
+  "When does my subscription renew?" with the disclaimer at score 1.0, meaning Ava
+  would have read it aloud to the caller. The uploader now strips the preamble and
+  asserts it never leaks.
+- **Make each Q&A self-contained.** With `## heading` + body, the chunker splits
+  the question from its answer and "what happens if my payment fails" returns the
+  *update payment method* chunk. The uploader now rewrites each section as
+  `Question: … Answer: …` in one block, which fixed every mismatch.
 
-**To revisit:** retry with `crawlDepth: 10`, a sitemap URL, or a specific
-article URL rather than the SPA hub.
+**If you ever want real vendor content:** retry with `crawlDepth: 10`, a sitemap
+URL, or a specific article URL rather than an SPA hub.
 
-### 12. Brand mismatch: Ava says "Owl Shoes", the KB says "Norton LifeLock"
-`VOICE_INSTRUCTIONS` (`app.py`, renamed from `SYSTEM_INSTRUCTIONS` by the #5 fix)
-makes the agent "Ava, an AI assistant for
-**Owl Shoes**", and the call greeting introduces her that way, but the knowledge
-base is now Norton LifeLock membership content. Ask about renewals and Ava
-answers with another company's billing policy — on a live call. `web.py`'s
-payment page and the README are also Owl Shoes branded, so this was left alone
-rather than silently rebranded.
+### 12. Brand mismatch between the agent and the KB — ✅ RESOLVED
+For a while `VOICE_INSTRUCTIONS` made the agent "Ava, an AI assistant for **Owl
+Shoes**" while the knowledge base held Norton LifeLock membership content — so
+asking about renewals made Ava quote another company's billing policy on a live
+call.
 
-Fix, pick one: replace `Owl Shoes` with `Norton LifeLock` in **all four places**
-the #5 fix left it — `VOICE_INSTRUCTIONS`, `SMS_INSTRUCTIONS`, the
-`welcome_greeting` in `VoiceChannelConfig`, and the `search_renewal_faq` tool
-description — plus the `/pay/{id}` page in `web.py` and the README for a coherent Norton
-demo; or rewrite `knowledge/norton-lifelock-faq.md` as brand-neutral
-"your membership" content that fits either persona.
+Resolved by putting the KB back on `knowledge/renewal-faq.md`. Ava, the
+`welcome_greeting`, the `search_renewal_faq` tool description, the `/pay/{id}`
+page in `web.py`, and the knowledge base are all Owl Shoes again. Nothing in the
+repo references Norton outside this file.
 
 ### 13. SMS is blocked until the A2P 10DLC campaign is approved — demo-breaker (timing)
 `+18782832270` is in the sender pool of Messaging Service
