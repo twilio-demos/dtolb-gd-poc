@@ -18,7 +18,8 @@ from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from tac.server import build_http_signature_dependency
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 from twilio.jwt.access_token import AccessToken
@@ -82,6 +83,42 @@ def create_router(
         )
         token.add_grant(VoiceGrant(incoming_allow=True))
         return {"token": token.to_jwt(), "identity": BROWSER_AGENT_IDENTITY}
+
+    # Where the still-live call lands once ConversationRelay ends (app.py points
+    # default_twiml_options.action_url here). TAC would otherwise send it to the
+    # Studio flow, but Studio's ?Trigger=incomingCall webhook answers HTTP 400
+    # for outbound-api calls — proven by replaying that webhook with only
+    # Direction changed — so on a dial-out demo the caller just hears
+    # "an application error has occurred". See KNOWN-ISSUES #17.
+    #
+    # Gating on HandoffData is what fixes KNOWN-ISSUES #8 too: Twilio hits this
+    # URL when ANY relay session ends, so without the check a dropped websocket
+    # would ring the browser as though the customer had asked for a human.
+    # Only a real handoff carries HandoffData.
+    @router.post(
+        "/handoff",
+        include_in_schema=False,
+        dependencies=[Depends(build_http_signature_dependency(tac_config.auth_token))],
+    )
+    async def handoff(request: Request) -> Response:
+        form = await request.form()
+        if form.get("HandoffData"):
+            events.publish("handoff", "Transferring the call to the browser agent")
+            # callerId must be a number this account owns. The Studio flow used
+            # {{contact.channel.address}}, which on an outbound call is the
+            # customer's own number — not ours, and not valid to dial as.
+            body = (
+                f'<Dial callerId="{tac_config.phone_number}" timeout="30">'
+                f"<Client>{BROWSER_AGENT_IDENTITY}</Client>"
+                f"</Dial>"
+            )
+        else:
+            # Normal end of call, or a dead relay session. Nothing to transfer.
+            body = "<Hangup/>"
+        return Response(
+            content=f'<?xml version="1.0" encoding="UTF-8"?><Response>{body}</Response>',
+            media_type="application/xml",
+        )
 
     @router.get("/pay/{link_id}", include_in_schema=False)
     async def payment_link(link_id: str) -> HTMLResponse:

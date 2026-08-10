@@ -70,6 +70,19 @@ voice_channel = VoiceChannel(
                 "Owl Shoes. I'm reaching out with a quick reminder to update "
                 "the payment information on your account. Is now an okay time?"
             ),
+            # Where Twilio sends the still-live call once ConversationRelay
+            # ends. TAC would default this to the Studio flow webhook
+            # (?Trigger=incomingCall), but **Studio rejects outbound-api calls
+            # with HTTP 400** — verified by replaying the webhook with only
+            # Direction changed: outbound-api -> 400, inbound -> 200. This demo
+            # dials out, so the Studio path can never work here and the caller
+            # hears "an application error has occurred" (KNOWN-ISSUES #17).
+            # Setting action_url takes precedence over studio_handoff_flow_sid
+            # in VoiceChannel._resolve_action_url, so we serve the transfer
+            # TwiML ourselves. TAC's handoff tool still does the real work:
+            # speaking the goodbye, ending the relay session, and attaching
+            # HandoffData — /handoff just gates on it and dials.
+            action_url=f"https://{tac.config.voice_public_domain}/handoff",
         ),
     ),
 )
