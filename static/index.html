@@ -5,8 +5,20 @@
 <title>TAC Payment Reminder Demo</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <!-- Twilio Voice JS SDK: turns this page into the "browser-agent" softphone
-     that the Studio flow rings on human handoff. -->
-<script src="https://sdk.twilio.com/js/voice/releases/2.12.1/twilio.min.js"></script>
+     that the Studio flow rings on human handoff.
+
+     NOTE: unlike the Video SDK, Twilio does NOT publish the Voice SDK 2.x on
+     sdk.twilio.com — the docs offer npm only. A plausible-looking
+     sdk.twilio.com/js/voice/releases/<ver>/twilio.min.js returns 403
+     AccessDenied from S3 at every version (only the retired Client 1.x lives
+     under /js/client/), so `Twilio` never gets defined and the page reports
+     "softphone error: Twilio is not defined". We load the published npm package
+     from a CDN instead; its UMD bundle sets globalThis.Twilio.Device, which is
+     what the code below expects.
+
+     Pinned to an exact version on purpose: a floating @2 tag would let this
+     page change under the demo. -->
+<script src="https://cdn.jsdelivr.net/npm/@twilio/voice-sdk@2.18.3/dist/twilio.min.js"></script>
 <style>
   :root { --ink:#121c2d; --accent:#f22f46; --ok:#0d7d3f; --line:#e1e3ea; }
   * { box-sizing:border-box; }
