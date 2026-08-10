@@ -1,0 +1,55 @@
+{
+  "description": "TAC demo human handoff: ring the browser softphone on the landing page",
+  "states": [
+    {
+      "name": "Trigger",
+      "type": "trigger",
+      "transitions": [
+        { "event": "incomingMessage" },
+        { "event": "incomingCall", "next": "check_handoff" },
+        { "event": "incomingRequest" }
+      ],
+      "properties": { "offset": { "x": 0, "y": 0 } }
+    },
+    {
+      "name": "check_handoff",
+      "type": "split-based-on",
+      "properties": {
+        "input": "{{trigger.call.HandoffData}}",
+        "offset": { "x": 0, "y": 110 }
+      },
+      "transitions": [
+        { "event": "noMatch" },
+        {
+          "event": "match",
+          "next": "ring_browser_agent",
+          "conditions": [
+            {
+              "friendly_name": "handoff payload present",
+              "arguments": ["{{trigger.call.HandoffData}}"],
+              "type": "contains",
+              "value": "conversationId"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "name": "ring_browser_agent",
+      "type": "connect-call-to",
+      "transitions": [
+        { "event": "callCompleted" },
+        { "event": "hangup" }
+      ],
+      "properties": {
+        "noun": "client",
+        "to": "browser-agent",
+        "caller_id": "{{contact.channel.address}}",
+        "timeout": 30,
+        "offset": { "x": 0, "y": 330 }
+      }
+    }
+  ],
+  "initial_state": "Trigger",
+  "flags": { "allow_concurrent_calls": true }
+}

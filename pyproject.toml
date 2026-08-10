@@ -1,0 +1,14 @@
+[project]
+name = "tac-payment-reminder-demo"
+version = "0.1.0"
+description = "Demo: Twilio Agent Connect (TAC) outbound payment-reminder voice agent with live SSE dashboard"
+requires-python = ">=3.10"
+dependencies = [
+    # TAC SDK with FastAPI server support -- the main entry point for all Twilio communications
+    "twilio-agent-connect[server] @ git+https://github.com/twilio/twilio-agent-connect-python.git",
+    # OpenAI Agents SDK -- the LLM runtime. TAC tools convert via .to_openai_agents_sdk_tool()
+    "openai-agents>=0.1.0",
+    # Twilio helper lib -- used only for the Voice JS SDK access token (browser softphone)
+    "twilio>=9.8.3",
+    "python-dotenv>=1.0.0",
+]

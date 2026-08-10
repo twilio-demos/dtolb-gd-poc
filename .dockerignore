@@ -1,0 +1,22 @@
+# The build context ships to the Pi as-is — keep it small and secret-free.
+.git
+.gitignore
+
+# Secrets. These are gitignored so they never reach the Pi via `twl deploy`
+# anyway, but belt-and-braces: nothing with credentials in the image.
+.env
+.env.*
+!.env.example
+
+# Local virtualenv — the image builds its own from uv.lock. Shipping this would
+# also be wrong: it holds macOS/arm binaries, not the Pi's.
+.venv
+
+__pycache__
+*.pyc
+*.pyo
+
+# Session notes, not runtime files.
+zscaler_issues.md
+*.bak
+*.bak.*

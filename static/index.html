@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TAC Payment Reminder Demo</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<!-- Twilio Voice JS SDK: turns this page into the "browser-agent" softphone
+     that the Studio flow rings on human handoff. -->
+<script src="https://sdk.twilio.com/js/voice/releases/2.12.1/twilio.min.js"></script>
+<style>
+  :root { --ink:#121c2d; --accent:#f22f46; --ok:#0d7d3f; --line:#e1e3ea; }
+  * { box-sizing:border-box; }
+  body { font-family:-apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+         margin:0; color:var(--ink); background:#f9fafb; }
+  header { background:var(--ink); color:#fff; padding:16px 24px; }
+  header h1 { margin:0; font-size:18px; font-weight:600; }
+  header small { color:#aeb2c1; }
+  main { max-width:720px; margin:24px auto; padding:0 16px; display:grid; gap:16px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:20px; }
+  .card h2 { margin:0 0 12px; font-size:15px; text-transform:uppercase; letter-spacing:.04em; color:#5c6270; }
+  .row { display:flex; gap:8px; }
+  input[type=tel] { flex:1; font-size:16px; padding:10px 12px; border:1px solid var(--line); border-radius:8px; }
+  button { font-size:15px; padding:10px 18px; border:0; border-radius:8px; cursor:pointer; font-weight:600; }
+  #call-btn { background:var(--accent); color:#fff; }
+  #call-btn:disabled { opacity:.5; cursor:default; }
+  /* incoming-call banner: hidden until the Studio flow dials this browser */
+  #incoming { display:none; background:#fff7e6; border:2px solid #f5a623; }
+  #incoming.ringing { display:block; animation:pulse 1s infinite; }
+  @keyframes pulse { 50% { box-shadow:0 0 0 6px rgba(245,166,35,.25); } }
+  #incoming .row { margin-top:10px; }
+  #accept { background:var(--ok); color:#fff; }
+  #hangup, #reject { background:#c72637; color:#fff; }
+  #oncall { display:none; }
+  #oncall.active { display:block; }
+  /* live feed */
+  #feed { list-style:none; margin:0; padding:0; max-height:420px; overflow-y:auto; }
+  #feed li { padding:8px 10px; border-bottom:1px solid var(--line); font-size:14px; display:flex; gap:10px; }
+  #feed li time { color:#8a8f9d; font-variant-numeric:tabular-nums; flex-shrink:0; }
+  #feed li.caller_said  { color:#0b5cad; }
+  #feed li.agent_said   { color:#6d28a8; }
+  #feed li.tool         { color:#8a5a00; }
+  #feed li.sms_sent, #feed li.link_clicked { color:var(--ok); font-weight:600; }
+  #feed li.handoff      { color:var(--accent); font-weight:600; }
+  /* client-side only: rendered when the "Call me" POST fails (never an SSE type) */
+  #feed li.error        { color:var(--accent); font-weight:600; }
+  .status-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#bbb; margin-right:6px; }
+  .status-dot.ok { background:var(--ok); }
+</style>
+</head>
+<body>
+<header>
+  <h1>&#128095; Owl Shoes — Payment Reminder Agent</h1>
+  <small>Twilio Agent Connect demo · <span id="softphone-status"><span class="status-dot"></span>softphone connecting…</span></small>
+</header>
+
+<main>
+  <section class="card">
+    <h2>1 · Trigger the outbound call</h2>
+    <div class="row">
+      <input id="phone" type="tel" placeholder="+15551234567" autocomplete="tel">
+      <button id="call-btn">Call me</button>
+    </div>
+  </section>
+
+  <section id="incoming" class="card">
+    <h2>&#128222; Customer wants a human!</h2>
+    <div>The AI agent is transferring the call to you.</div>
+    <div class="row">
+      <button id="accept">Accept call</button>
+      <button id="reject">Decline</button>
+    </div>
+  </section>
+
+  <section id="oncall" class="card">
+    <h2>&#127911; Connected to customer</h2>
+    <div class="row"><button id="hangup">Hang up</button></div>
+  </section>
+
+  <section class="card">
+    <h2>2 · Live call feed (SSE)</h2>
+    <ul id="feed"><li><time>--:--:--</time>Waiting for events…</li></ul>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+
+// ---------- Live event feed (Server-Sent Events) ----------
+const feed = $("feed");
+
+// Shared by the SSE stream and by our own client-side error lines.
+// Omit `time` and we stamp it ourselves in events.py's HH:MM:SS format.
+function addLine(type, text, time) {
+  const li = document.createElement("li");
+  li.className = type;
+  li.innerHTML = `<time>${time || new Date().toTimeString().slice(0, 8)}</time><span></span>`;
+  li.querySelector("span").textContent = text;
+  feed.prepend(li);
+}
+
+new EventSource("/events").onmessage = (msg) => {
+  const e = JSON.parse(msg.data);
+  addLine(e.type, e.text, e.time);
+};
+
+// ---------- "Call me" button ----------
+$("call-btn").onclick = async () => {
+  $("call-btn").disabled = true;
+  try {
+    // The server publishes SSE only *after* Twilio accepts the call, so a
+    // failure (unverified number on a trial account, blank field) would leave
+    // the feed silent unless we render it here.
+    const res = await fetch("/api/call", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ phone: $("phone").value.trim() }),
+    });
+    if (!res.ok) {
+      addLine("error", `Call failed (HTTP ${res.status}) — check the number is E.164 and verified on a trial account; see the server log.`);
+    }
+  } catch (err) {
+    addLine("error", `Call failed: ${err.message}`);
+  } finally {
+    setTimeout(() => ($("call-btn").disabled = false), 3000);
+  }
+};
+
+// ---------- Browser softphone (Twilio Voice JS SDK) ----------
+// Registers as client "browser-agent". When the caller asks for a human,
+// the AI's handoff tool ends its session and the Studio flow dials us here.
+let activeCall = null;
+
+async function fetchToken() {
+  const res = await fetch("/token");
+  if (!res.ok) throw new Error(`/token returned HTTP ${res.status}`);
+  return (await res.json()).token;
+}
+
+// Grey dot + message: the header must stop claiming "ready".
+function softphoneProblem(text) {
+  $("softphone-status").innerHTML = '<span class="status-dot"></span>' + text;
+}
+
+async function setupSoftphone() {
+  const device = new Twilio.Device(await fetchToken(), { logLevel: "error" });
+
+  device.on("registered", () => {
+    $("softphone-status").innerHTML =
+      '<span class="status-dot ok"></span>softphone ready (browser-agent)';
+  });
+
+  // Voice access tokens are minted with ttl 3600s. Refresh on tokenWillExpire
+  // (fires ~10s before expiry) or the Device silently unregisters and the
+  // Studio handoff rings a client that is no longer there.
+  device.on("tokenWillExpire", async () => {
+    try {
+      device.updateToken(await fetchToken());  // re-registers with the new token
+    } catch (err) {
+      softphoneProblem("softphone token refresh failed: " + err.message);
+    }
+  });
+
+  device.on("error", (err) => softphoneProblem("softphone error: " + err.message));
+  device.on("unregistered", () => softphoneProblem("softphone offline"));
+
+  device.on("incoming", (call) => {
+    activeCall = call;
+    $("incoming").classList.add("ringing");
+
+    $("accept").onclick = () => { call.accept(); };
+    $("reject").onclick = () => { call.reject(); ringOff(); };
+    call.on("accept", () => { ringOff(); $("oncall").classList.add("active"); });
+    call.on("disconnect", () => { $("oncall").classList.remove("active"); activeCall = null; });
+    call.on("cancel", ringOff);
+  });
+
+  $("hangup").onclick = () => activeCall && activeCall.disconnect();
+
+  device.register();
+}
+
+function ringOff() { $("incoming").classList.remove("ringing"); }
+
+setupSoftphone().catch((err) => {
+  $("softphone-status").textContent = "softphone error: " + err.message;
+});
+</script>
+</body>
+</html>
