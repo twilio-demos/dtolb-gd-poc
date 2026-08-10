@@ -145,6 +145,11 @@ Three things are non-obvious about option B, all learned by breaking them:
   identity `browser-agent`, so a handoff to two open pages is ambiguous
   (KNOWN-ISSUES #14).
 
+Operational note: for ~10-20s after `twl deploy` replaces the container, the proxy
+has not re-registered the backend and **every route returns 404** while the app
+logs a clean startup. It clears on its own — but don't deploy minutes before
+demoing, and confirm `GET /` returns 200 before you trust it.
+
 Open **http://localhost:8000**, wait for "softphone ready", enter your mobile
 number, click **Call me**, and answer the phone.
 
