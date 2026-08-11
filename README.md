@@ -33,8 +33,9 @@ landing page ──POST /api/call──▶ app.py ──TAC VoiceChannel──�
 - **`events.py`** — 40-line SSE hub.
 - **`static/index.html`** — the landing page (vanilla JS + Twilio Voice JS SDK).
 - **`Dockerfile`** — for deploying to the `twl` dev box (linux/arm64).
+- **[`HANDOFF.md`](HANDOFF.md)** — current status, what works, and the traps.
+  **Start here if you're picking this up.**
 - **[`KNOWN-ISSUES.md`](KNOWN-ISSUES.md)** — 18 findings and their current status.
-  **Read this before trusting any part of the demo**; a few things are still open.
 
 The voice handoff is the neat part: the LLM calls `connect_to_human_agent`,
 TAC finishes speaking the goodbye sentence, ends the ConversationRelay session,

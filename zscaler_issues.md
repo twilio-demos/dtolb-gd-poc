@@ -1,22 +1,12 @@
-# Zscaler issues
+# Corporate TLS interception vs. ngrok
 
-Found 2026-08-10 while configuring this demo's Twilio account. Cause was
-verified as Zscaler before writing anything down — see "How it was confirmed".
+Notes from 2026-08-10. Relevant if you're on a managed laptop running Zscaler (or
+any TLS-intercepting proxy) and ngrok won't connect. **If you deploy to a hosted
+URL instead, none of this applies** — see the README's public-domain options.
 
-## TL;DR
+## Symptom
 
-| Thing | Status |
-|---|---|
-| Twilio APIs (api / knowledge / conversations / memory / studio) | ✅ Unaffected — Zscaler bypasses Twilio |
-| OpenAI API | ✅ Reachable, TLS verifies clean |
-| **ngrok tunnel** | 🔴 **Blocked** — Zscaler MITM breaks the agent's TLS |
-| Twilio account provisioning for this demo | ✅ Went ahead, not blocked by this |
-
-Only `TWILIO_VOICE_PUBLIC_DOMAIN` in `.env` is left unset because of this.
-
-## The problem
-
-`ngrok http 8000` never establishes a tunnel. It retries forever with:
+`ngrok http 8000` never establishes a tunnel and retries forever:
 
 ```
 lvl=eror msg="failed to reconnect session" obj=tunnels.session
@@ -24,96 +14,62 @@ lvl=eror msg="failed to reconnect session" obj=tunnels.session
        x509: certificate signed by unknown authority"
 ```
 
-## How it was confirmed as Zscaler
+## Why
 
-1. **Zscaler is intercepting the ngrok endpoint.** The cert served for
-   `connect.ngrok-agent.com` is issued by Zscaler, not by ngrok's real CA:
+The proxy intercepts ngrok's tunnel endpoint. The certificate served for
+`connect.ngrok-agent.com` is issued by the corporate CA, not ngrok's:
 
-   ```
-   subject: CN=connect.ngrok-agent.com; O=Zscaler Inc.; OU=Zscaler Inc.
-   issuer:  CN=Zscaler Intermediate Root CA (zscalertwo.net); O=Zscaler Inc.
-   ```
+```
+subject: CN=connect.ngrok-agent.com; O=Zscaler Inc.
+issuer:  CN=Zscaler Intermediate Root CA (…); O=Zscaler Inc.
+```
 
-2. **Twilio is *not* intercepted** — genuine issuer, which matches
-   "Twilio URLs always work":
+The corporate root **is** trusted system-wide, which is why `curl` and browsers
+are fine (`ssl_verify_result=0`). The failure is specific to ngrok's Go binary,
+which does not consult the macOS keychain for its tunnel connection.
 
-   ```
-   subject: O=Twilio Inc.; CN=*.twilio.com
-   issuer:  O=DigiCert Inc; CN=DigiCert Global G2 TLS RSA SHA256 2020 CA1
-   ```
+Interception is **scoped, not global**. On this setup `*.twilio.com` is served its
+genuine DigiCert certificate and is unaffected, which is why every Twilio API call
+works without a workaround.
 
-3. **The Zscaler root IS trusted system-wide** (1 match in
-   `/Library/Keychains/System.keychain`), which is why `curl` reports
-   `SSL certificate verify ok` / `ssl_verify_result=0` for every host, and why
-   browsers are fine. The failure is specific to ngrok's Go binary, which does
-   not consult the macOS keychain for its tunnel connection.
-
-So: interception is real, it is Zscaler, and it is scoped to non-Twilio hosts.
-
-## Workaround progress (partial — not solved)
+## Workaround attempts
 
 | Attempt | Result |
 |---|---|
-| `SSL_CERT_FILE=<171-cert bundle exported from System keychain>` | ❌ Ignored. Still `x509: unknown authority`. ngrok pins its own CA pool. |
+| `SSL_CERT_FILE=<bundle exported from the system keychain>` | ❌ Ignored — still `x509: unknown authority`. ngrok pins its own CA pool. |
 | `version: "3"` + top-level `root_cas: host` | ❌ Rejected: `field root_cas not found in type config.v3yamlConfig` |
-| `version: "3"` + `agent: { root_cas: host }` | ❌ Rejected: `field root_cas not found in type config.Agent` |
-| **`version: "2"` + `root_cas: host`** | ⚠️ **x509 error GONE.** New error: `failed to send authentication request: session closed` |
+| `version: "3"` + `agent: { root_cas: host }` | ❌ Rejected: not found in `config.Agent` |
+| **`version: "2"` + `root_cas: host`** | ⚠️ **x509 error gone.** New error: `failed to send authentication request: session closed` |
 
-The last row is the useful one. `root_cas: host` makes ngrok use the host trust
-store, so it now accepts the Zscaler cert — the TLS layer is fixed. Config that
-got that far:
+The last row is the useful one — `root_cas: host` makes ngrok use the host trust
+store, so the TLS layer is satisfied:
 
 ```yaml
-# /tmp/ngrok_v2b.yml
+# ngrok-corp.yml
 version: "2"
 root_cas: host
 ```
 
 ```bash
-ngrok http 8000 --config=/tmp/ngrok_v2b.yml
+ngrok config add-authtoken <token>          # do this first
+ngrok http 8000 --config=ngrok-corp.yml
 ```
 
-**Unresolved:** whether `session closed` is (a) just the missing authtoken —
-no authtoken was configured during any of these tests, there is no
-`~/Library/Application Support/ngrok/ngrok.yml` — or (b) Zscaler's proxy
-breaking ngrok's multiplexed tunnel protocol after the handshake. **These two
-cannot be distinguished until an authtoken is added.** Do that first:
+**Unresolved:** whether the remaining `session closed` is simply the missing
+authtoken — none was configured during any of these tests — or the proxy breaking
+ngrok's multiplexed tunnel protocol after the handshake. **These cannot be
+distinguished until an authtoken is added**, so add one and retry before drawing
+conclusions.
 
-```bash
-ngrok config add-authtoken <token>   # then retry with the version:2 config above
-```
+If `session closed` persists with a valid authtoken, the tunnel protocol itself is
+being broken. The options are a proxy bypass for `*.ngrok-agent.com` and
+`*.ngrok.io`, or skipping ngrok and deploying to a hosted URL.
 
-If `session closed` persists with a valid authtoken, the tunnel protocol itself
-is being broken and the options are a Zscaler bypass/PAC exception for
-`*.ngrok-agent.com` + `*.ngrok.io`, or skip ngrok entirely (see below).
+Note `root_cas: host` only changes which trust store ngrok validates against; it
+does not make ngrok trust a pinned CA. Prefer asking IT for a bypass over relying
+on it long-term.
 
-Also note `root_cas: host` only silences cert validation against the host store
-— it does **not** make ngrok trust a pinned ngrok CA. Ask IT for a bypass rather
-than relying on this long-term.
+## Unrelated diagnostic tip
 
-## Alternative that avoids ngrok completely
-
-This machine already has a working public HTTPS ingress: the `twl` dev box,
-serving `*.twl.dtolb.com` (`twl list` shows `flight-sandbox`,
-`aci-quality-poc`, `hello` all running). Deploying this demo there would give a
-**stable** domain, e.g. `gd-poc.twl.dtolb.com`, for
-`TWILIO_VOICE_PUBLIC_DOMAIN` — with no ngrok, no Zscaler exposure, and no
-re-editing `.env` every restart.
-
-Caveats to check before committing to it: needs a Dockerfile, and Traefik must
-pass through the ConversationRelay **websocket** (TAC needs `wss://`). Inbound
-traffic is Twilio → your box, so Zscaler on this laptop is not in that path.
-
-## Unrelated credential trap found at the same time
-
-Not Zscaler, but it will produce confusing 401s. Recorded here so it isn't
-mistaken for a proxy problem:
-
-- Shell exports `TWILIO_API_KEY=SKf5c81c…`, a **restricted key with no
-  permissions** (every call returns `70051 Authorization Error`).
-- `.env` has the good key `SKee7879…` (full permissions, verified).
-- `app.py:47` calls `load_dotenv()` without `override=True`, so **the shell key
-  wins** and every Twilio call fails.
-
-Fix: `load_dotenv(override=True)`, and `unset TWILIO_API_KEY TWILIO_API_SECRET`
-in the shell.
+`timeout` is **not** a stock macOS binary. A probe loop using it fails uniformly
+and looks exactly like a network outage. Use `curl -m N` instead.

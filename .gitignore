@@ -1,12 +1,14 @@
+# Credentials. .env.* also covers timestamped backups, which hold live values.
 .env
-# Timestamped .env backups hold live credentials too. This repo has no commits
-# yet, so without this line the first `git add -A` would commit them.
 .env.*
 !.env.example
+
 .venv/
 __pycache__/
 *.pyc
-# uv.lock is deliberately NOT ignored: `twl deploy` ships only committed files,
-# and the lock pins the TAC git dependency to an exact commit. Without it the
-# Pi builds against whatever upstream main is that day — and the KNOWN-ISSUES #1
-# workaround depends on 2.2.0's Pydantic return type.
+
+# Browser-automation artifacts (page snapshots, console logs).
+.playwright-mcp/
+
+# uv.lock is deliberately NOT ignored — it pins the TAC git dependency to an
+# exact commit, and the deploy ships only committed files.

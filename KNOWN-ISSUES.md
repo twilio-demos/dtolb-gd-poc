@@ -1,403 +1,263 @@
 # Known Issues
 
-Issues 1–10 are from the 2026-08-10 code review (verified against the installed
-TAC SDK source in `.venv`; issue 1 reproduced by execution). Issues 11–12 were
-found the same day while provisioning the Twilio account.
-
-**Status as of 2026-08-10.** Severity order within each section.
-"Demo-breaker" = will visibly fail during the demo script.
+Findings from a code review and from getting the demo running on real calls
+(2026-08-10). Issues 1–10 came from reviewing the code against the installed TAC
+SDK source; 11–18 came from provisioning, deploying, and calling a real phone.
 
 | | Issues |
 |---|---|
-| ✅ Fixed & reviewed | #1, #2, #3, #4, #5, #6, #7, #9, #10 |
-| ✅ Fixed & verified on the live deployment | #15 (proxy signatures), #16 (softphone SDK URL), #17 (handoff), #18 (prompt) |
-| ✅ Resolved during provisioning | #11 (KB content), #12 (branding) |
-| ⏳ Blocked on Twilio approval | #13 (A2P 10DLC → SMS leg) |
-| ℹ️ Won't fix — documented workaround | #14 (dual-deploy softphone identity) |
+| ⛔ Open — blocks a demo path | #13 (SMS) |
+| 📤 Open — upstream reports drafted, not filed | #1, #17 |
+| ℹ️ Won't fix — documented workaround | #14 |
+| ✅ Fixed | #2–#12, #15, #16, #18 |
 
-Every fix was adversarially reviewed by a second pass; #1–#10 each verified
-against the installed SDK source rather than assumed. **None of it has been
-exercised on a real call** — the demo needs a real `.env`, a public domain, and a
-live phone, and `TWILIO_VOICE_PUBLIC_DOMAIN` is still unset (see
-`zscaler_issues.md`). Treat "fixed" as "reviewed and compiles", not "demoed".
+**"Fixed" means reviewed and exercised**, not formally tested — there are no
+automated tests. The outbound call, AI conversation, FAQ lookup and human handoff
+have all run on a real call. The SMS leg never has (#13).
 
 Judged against this project's bar: teaching/sample code, not production.
-Production concerns (auth, persistence, multi-user, retries) are intentionally
-out of scope and not listed.
+Production concerns (auth, persistence, multi-user, retries) are intentionally out
+of scope.
 
-## SDK bug (fix belongs upstream)
+---
 
-### 1. Knowledge tool crashes on every use — ✅ FIXED (workaround) 2026-08-10
-`TACTool.to_openai_agents_sdk_tool()` JSON-encodes tool results with a bare
-`json.dumps(result)` (`tac/tools/base.py` `on_invoke`), but the SDK's own
-`create_knowledge_tool` returns `list[KnowledgeChunkResult]` Pydantic models —
-not JSON-serializable. Caller asks an FAQ question → search succeeds →
-`TypeError` → TAC logs it and the caller hears dead air.
-**Demo workaround:** wrap the knowledge tool so it returns a string /
-`[c.model_dump() for c in chunks]`. **Real fix:** upstream in
-twilio-agent-connect-python (Pydantic-aware serialization in `on_invoke`).
-File an issue on the repo — every consumer combining the built-in knowledge
-tool with the OpenAI Agents converter hits this.
+## Open
 
-**Applied workaround** (`app.py`, `get_knowledge_tool`): the SDK tool is bound to
-a local `search`, and a thin `search_renewal_faq(query)` wrapper returns
-`[chunk.model_dump() for chunk in chunks]`. The wrapper is rebuilt with
-`create_tool(...)` reusing `search.params_json_schema`, so the LLM-facing
-parameter stays exactly `query` and the tool is still cached and still converted
-via `.to_openai_agents_sdk_tool()`. **Delete the wrapper once this is fixed
-upstream.**
+### 13. US SMS is blocked until A2P 10DLC is approved
+The sending number sits in a Messaging Service whose campaign is still pending.
+Until it verifies, Twilio **rejects** US-bound SMS with error **30034 ("Message
+from an Unregistered Number")** — it fails hard, not silently, so the "text me the
+link" leg of the demo cannot work. Check campaign status before demoing.
 
-<details><summary>Upstream bug report draft — NOT yet filed</summary>
+No code change is needed for the Messaging Service. TAC always sends
+`From: config.phone_number` and has no messaging-service parameter on the outbound
+path (`InitiateMessagingConversationOptions` exposes only `to`, `message`,
+`metadata`). That's fine: A2P registration binds to the **number** via the
+service's sender pool, not to the API parameter you send with. One number in the
+pool is also the right shape — with several you can't choose which gets registered.
+
+If approval hasn't landed by demo time, the documented pre-registration path is a
+sender type outside A2P 10DLC. A **toll-free** number (with TF verification) is the
+realistic swap, and it's a one-line `.env` change since TAC only reads
+`TWILIO_PHONE_NUMBER`.
+
+### 1. Knowledge tool results aren't JSON-serializable
+**Upstream SDK bug. Worked around here; report drafted below, not filed.**
+
+`TACTool.to_openai_agents_sdk_tool()`'s `on_invoke` encodes results with a bare
+`json.dumps()` (`tac/tools/base.py`), but `create_knowledge_tool` returns
+`list[KnowledgeChunkResult]` Pydantic models. The search succeeds, encoding raises
+`TypeError`, the voice channel only logs it — and the caller hears dead air.
+
+**Applied workaround** (`app.py`, `get_knowledge_tool`): the SDK tool is bound to a
+local `search`, and a thin wrapper returns `[chunk.model_dump() for chunk in
+chunks]`, rebuilt with `create_tool(...)` reusing `search.params_json_schema` so
+the LLM-facing parameter stays exactly `query`. **Delete the wrapper once this is
+fixed upstream.**
+
+<details><summary>Upstream bug report draft</summary>
 
 **Title:** `to_openai_agents_sdk_tool()` can't serialize built-in knowledge tool
 results (bare `json.dumps` on Pydantic models)
 
 **Version:** twilio-agent-connect 2.2.0, openai-agents 0.19.4, Python 3.12
 
-**Repro:** build a tool with `create_knowledge_tool(knowledge_client=...,
-knowledge_base_id=..., name="search_faq", top_k=3)`, pass
-`tool.to_openai_agents_sdk_tool()` to `Agent(tools=[...])`, then ask a question
-that triggers it.
+**Repro:** build a tool with `create_knowledge_tool(...)`, pass
+`tool.to_openai_agents_sdk_tool()` to `Agent(tools=[...])`, ask a question that
+triggers it.
 
-**Result:** `TypeError: Object of type KnowledgeChunkResult is not JSON
-serializable`
+**Result:** `TypeError: Object of type KnowledgeChunkResult is not JSON serializable`
 
-**Cause:** `TACTool.to_openai_agents_sdk_tool().on_invoke`
-(`tac/tools/base.py`) ends with `return json.dumps(result)`, while
-`tac.tools.knowledge.search_knowledge` is annotated
-`-> list[KnowledgeChunkResult]` and returns Pydantic models.
+**Cause:** `on_invoke` ends with `return json.dumps(result)` while
+`tac.tools.knowledge.search_knowledge` is annotated `-> list[KnowledgeChunkResult]`.
 
-**Impact:** because TAC constructs `FunctionTool` directly, openai-agents
-attaches no failure handler, so the exception escapes `Runner.run()`. On voice,
+**Impact:** TAC constructs `FunctionTool` directly, so openai-agents attaches no
+failure handler and the exception escapes `Runner.run()`. On voice,
 `VoiceChannel._handle_prompt` catches and logs it and sends no response — the
 caller hears **silence**, with no user-visible error.
 
-**Suggested fix:** make `on_invoke` Pydantic-aware, e.g.
-`json.dumps(result, default=lambda o: o.model_dump(by_alias=True) if
-isinstance(o, BaseModel) else str(o))`, or route through
-`pydantic.TypeAdapter(Any).dump_json(result).decode()`. Optionally also pass a
-`failure_error_function` to `FunctionTool` so tool errors reach the model instead
-of killing the turn.
+**Suggested fix:** make `on_invoke` Pydantic-aware, e.g. `json.dumps(result,
+default=lambda o: o.model_dump(by_alias=True) if isinstance(o, BaseModel) else
+str(o))`, or `pydantic.TypeAdapter(Any).dump_json(result).decode()`. Optionally
+pass a `failure_error_function` to `FunctionTool` so tool errors reach the model
+instead of killing the turn.
 
 </details>
 
-## Demo wiring (fix here)
+### 17. Studio rejects outbound-api calls
+**Platform limitation. Worked around here; worth reporting upstream.**
 
-### 2. Missing Studio flow SID silently mutes the whole agent — ✅ FIXED 2026-08-10
-`create_studio_handoff_tool()` is called on every utterance (`app.py`,
-`handle_message_ready`) and raises `ValueError` if
-`TWILIO_STUDIO_HANDOFF_FLOW_SID` / orchestrator / memory-store config is
-missing. The voice channel swallows the exception, so a half-finished `.env`
-produces dead air on every turn — killing even the SMS + FAQ parts that don't
-need Studio. Guard on `tac.config.studio_handoff_flow_sid` so missing config
-degrades to "no handoff tool".
-(SDK ergonomics feedback: swallowed callback exceptions become silence.)
-
-### 3. Shared tool singleton — teaches the wrong pattern — ✅ FIXED 2026-08-10
-`send_payment_link.configure_injection(session=...)` mutates the module-level
-tool in place (SDK updates `_injected_args` and returns `self`); the "tools
-are (re)bound per message" comment implies per-call isolation that doesn't
-exist. Interleaved SMS + voice turns can use the wrong session; copied into a
-multi-caller app this texts the wrong customer. Fix: make it a factory that
-builds a fresh tool per message — mirroring the SDK's own
-`create_studio_handoff_tool` pattern.
-(SDK ergonomics feedback: mutate-and-return-`self` invites this mistake.)
-
-### 4. Failed "Call me" is invisible in the UI — ✅ FIXED 2026-08-10
-`static/index.html` never checks `res.ok`; the server publishes SSE only after
-a successful Twilio call. Trial account + unverified number (the README's own
-#1 gotcha) or a blank phone field → 500 → button greys, feed stays empty.
-Fix: check `res.ok`, render an error line into the feed.
-
-### 5. SMS replies get the voice prompt with fresh history — ✅ FIXED 2026-08-10
-An inbound SMS reply lands on a new `conversation_id` with empty history while
-the single `SYSTEM_INSTRUCTIONS` prompt said "you are on an outbound phone
-call" and "send the link when the customer thanks you" — replying "thanks!" to the SMS plausibly
-sends a second link. `context.channel` is available and unused. Fix: branch
-instructions/tools on channel, or document the limitation in the comment.
-
-### 6. `studio-flow.json` missing `caller_id` — ✅ FIXED 2026-08-10
-Console-built Connect Call To widgets export
-`"caller_id": "{{contact.channel.address}}"`; importing without it may fail on
-Publish or dial the client without caller ID. Fix: add the property.
-
-### 7. `uvicorn app:app` serves a half-wired app — ✅ FIXED 2026-08-10
-`TACFastAPIServer` registers all TAC webhook/WebSocket routes in its
-**constructor**, which only runs under `if __name__ == "__main__"`. Running
-`uvicorn app:app --reload` boots the landing page but Twilio's TwiML fetch
-404s. Fix: construct the server at module scope; keep only `server.start()`
-under the guard.
-
-### 8. Any relay-session death rings the browser — ✅ FIXED 2026-08-10
-With a flow SID set, TAC pointed *every* call's `<Connect action>` at the Studio
-flow, and the flow dialed `browser-agent` unconditionally — so a websocket drop
-on a live call rang "Customer wants a human!" unprompted.
-
-**Fixed as a side effect of #17.** The action URL is now our own `/handoff`
-route, which dials only when the request carries `HandoffData`; any other
-relay-session end gets `<Hangup/>`. Verified against the deployment with signed
-requests: `HandoffData` present → `<Dial><Client>browser-agent</Client></Dial>`,
-absent → `<Hangup/>`, forged signature → 403.
-
-The earlier plan — a `split-based-on` widget in `studio-flow.json` gating on
-`{{trigger.call.HandoffData}}` — is moot: Studio is no longer in this path at
-all (#17). That widget is still in `studio-flow.json` and harmless; the flow was
-never published past revision 1 and nothing points at it now.
-
-### 9. Softphone token expires after ~1 hour, silently — ✅ FIXED 2026-08-10
-One token fetch (ttl 3600s), no `error` / `tokenWillExpire` listeners. Header
-still says "softphone ready" while the Device is unregistered → handoff rings
-nothing, Studio times out, caller dropped. Fix: `device.on("tokenWillExpire")`
-→ re-fetch `/token` → `device.updateToken()`, plus `device.on("error")`.
-
-### 10. `memory_response` is dead ceremony — ✅ FIXED 2026-08-10
-Both channels sit at the default `memory_mode="never"`, so `memory_response`
-is always `None`, yet the callback signature carries it while a hand-rolled
-global history dict does the real work. Fix: either set
-`memory_mode="always"` and compose the prompt with `MemoryPromptBuilder`
-(also gives SMS cross-channel context), or drop the parameter ceremony.
-
-## Content / account wiring (found 2026-08-10 during provisioning)
-
-### 11. Twilio's crawler got only nav chrome from an SPA help center — ✅ RESOLVED
-Historical, kept because the retrieval lessons generalize. We briefly pointed the
-knowledge base at
-`https://support.norton.com/lifelock/en/us/home/current/help-center` as a **Web**
-source. Twilio's crawler reported `status: COMPLETED` with no error, but at
-`crawlDepth: 3` indexed **1 chunk / 579 chars** of pure menu text
-("Help Center Search … Top FAQ … Identity assistance") — no article bodies, no
-linked pages followed. That is the signature of a JS-rendered help center: the
-crawler gets the static shell. Not diagnosed further on purpose; confirming it
-would mean scraping the site ourselves, which defeats the point of a managed
-crawler.
-
-It was actively harmful while present: as the only chunk it matched *every* query
-at score 0.8, feeding identity-theft menu text to the LLM for every renewal
-question.
-
-**Current state:** the KB holds a single Text source built from
-`knowledge/renewal-faq.md` (Owl Shoes), verified **7/7** on the demo's question
-set. All Norton sources and files are deleted.
-
-Two retrieval lessons that cost real debugging time — keep them if the content is
-ever rewritten:
-- **Never put a preamble or disclaimer in the indexed body.** A leading
-  "Load this document into…" note or a "⚠️ synthetic content" warning becomes its
-  own chunk and *wins* the semantic search — one earlier upload answered
-  "When does my subscription renew?" with the disclaimer at score 1.0, meaning Ava
-  would have read it aloud to the caller. The uploader now strips the preamble and
-  asserts it never leaks.
-- **Make each Q&A self-contained.** With `## heading` + body, the chunker splits
-  the question from its answer and "what happens if my payment fails" returns the
-  *update payment method* chunk. The uploader now rewrites each section as
-  `Question: … Answer: …` in one block, which fixed every mismatch.
-
-**If you ever want real vendor content:** retry with `crawlDepth: 10`, a sitemap
-URL, or a specific article URL rather than an SPA hub.
-
-### 12. Brand mismatch between the agent and the KB — ✅ RESOLVED
-For a while `VOICE_INSTRUCTIONS` made the agent "Ava, an AI assistant for **Owl
-Shoes**" while the knowledge base held Norton LifeLock membership content — so
-asking about renewals made Ava quote another company's billing policy on a live
-call.
-
-Resolved by putting the KB back on `knowledge/renewal-faq.md`. Ava, the
-`welcome_greeting`, the `search_renewal_faq` tool description, the `/pay/{id}`
-page in `web.py`, and the knowledge base are all Owl Shoes again. Nothing in the
-repo references Norton outside this file.
-
-### 13. SMS is blocked until the A2P 10DLC campaign is approved — demo-breaker (timing)
-`+18782832270` is in the sender pool of Messaging Service
-`MGe7c2929facff307d2dab6a5d36b35f52` ("GD-Hackathon"). Brand
-`BN95cbd2c896ec7995970526412a1ae486` is **APPROVED** (Standard), but campaign
-`QE2c6890da8086d771620e9b13fadeba0b` is **`IN_PROGRESS`** (use case
-`LOW_VOLUME`, no errors logged).
-
-Until that campaign reaches verified, Twilio **blocks** US-bound SMS from this
-number with **error 30034 — "Message from an Unregistered Number."** It fails
-hard, not soft, so the "text me the link" leg of the demo will not work. Re-check
-campaign status the morning of the demo.
-
-**No code change is needed for the Messaging Service.** TAC sends
-`From: config.phone_number` and has no messaging-service parameter on the
-outbound path — `InitiateMessagingConversationOptions` exposes only `to`,
-`message`, `metadata`, and `tac/channels/sms.py:81` passes
-`from_address=self.tac.config.phone_number`. That is fine: A2P registration binds
-to the *number* through the service's sender pool, not to the API parameter you
-send with (see Twilio errors 60704 / 30034). One number in the pool is also the
-right shape — with several you cannot choose which one gets registered.
-
-Two caveats worth knowing:
-- The campaign description says *"I only send messages to myself for purposes of
-  testing code I write."* Texting an audience member is outside that declared
-  scope, and `LOW_VOLUME` carries throughput limits.
-- If approval has not landed by demo time, the documented pre-registration path
-  is a sender type outside A2P 10DLC — a **toll-free number** (with TF
-  verification) is the realistic swap, and it is a one-line `.env` change since
-  TAC only reads `TWILIO_PHONE_NUMBER`.
-
-The service has `use_inbound_webhook_on_number: true`, so inbound replies still
-route to the number's own webhook — which is what TAC wires up. No conflict with
-the #5 SMS-reply handling.
-
-### 14. Two deployments collide on the `browser-agent` softphone identity
-The demo now runs in two places — the twl dev box
-(`https://gd-poc.twl.dtolb.com`) and locally behind ngrok. They coexist fine for
-outbound calls, because TAC builds the ConversationRelay `wss://` URL and the SMS
-payment link **per call** from that instance's `TWILIO_VOICE_PUBLIC_DOMAIN`.
-
-But both landing pages register as Twilio Client `browser-agent`
-(`web.py: BROWSER_AGENT_IDENTITY`), and `studio-flow.json` dials that literal
-name. With both pages open, a handoff rings an ambiguous target — quite possibly
-the browser you are not presenting from.
-
-**Workaround: keep one landing page open at a time.** Deliberately not fixed:
-making the identity an env var also needs a second Studio flow (or a flow
-variable) because the Connect Call To widget dials a literal client name, which is
-more moving parts than the demo earns.
-
-## Deployment (found 2026-08-10 running on the twl dev box)
-
-### 15. TLS-terminating proxy broke every Twilio signature check — ✅ FIXED 2026-08-10
-Only reproducible when deployed, not locally. On `https://gd-poc.twl.dtolb.com`
-the live log showed four consecutive
-`POST /twilio/call-events/status -> 403 Forbidden`.
-
-Twilio signs the full request URL. TAC validates that signature on `/twiml`, the
-relay action callback, the call-event callbacks **and the `/ws` upgrade** — so
-this broke the entire voice path, not just status events.
-
-Diagnosed by signing candidate URLs and seeing which one the deployed app would
-accept: it accepted a signature computed over `http://gd-poc.twl.dtolb.com/...`
-and rejected `https://...`. Caddy terminates TLS on the twl box and Traefik then
-overwrites `X-Forwarded-Proto` with `http`.
-
-`uvicorn --proxy-headers` **cannot** fix this: `_build_url`
-(`tac/server/signature_validation.py`) reads the `X-Forwarded-Proto` header
-directly and prefers it over the ASGI scheme, so rewriting the scheme is not
-enough — the header itself has to change.
-
-**Fix:** `TrustProxyHTTPS` in `app.py`, a pure-ASGI middleware gated on
-`TRUST_PROXY_HTTPS=1` that forces the header to `https`. Pure ASGI rather than
-`@app.middleware("http")` because that flavor never sees `websocket` scopes, and
-the ConversationRelay socket needs it just as much. The WS validator maps
-`https` -> `wss`, which is what Twilio signs there.
-
-Leave `TRUST_PROXY_HTTPS` **unset under ngrok** — ngrok forwards the header
-correctly, and forcing it would be wrong if you ever served plain HTTP.
-
-Verified on the live deployment, both directions:
-
-| Signed as | Result |
-|---|---|
-| `https://…/twilio/call-events/status` (real Twilio) | 200 |
-| `http://…` (the old broken reconstruction) | 403 |
-| forged signature | 403 — validation still enforced |
-| `wss://…/ws` (real Twilio) | **101 Connected** |
-| `ws://…/ws` | 403 |
-
-### 16. Softphone dead: Voice JS SDK 2.x is not on sdk.twilio.com — ✅ FIXED 2026-08-10
-The landing page header read **"softphone error: Twilio is not defined"**, so the
-handoff had nothing to ring. (The message itself came from the #9 error handler
-doing its job — without it this would have been silent.)
-
-Root cause was the `<script src>`, not the JavaScript. The page loaded
-`https://sdk.twilio.com/js/voice/releases/2.12.1/twilio.min.js`, which returns
-**403 `AccessDenied` from `AmazonS3`** — and so does *every* version under
-`/js/voice/`. Not the corporate proxy: the cert issuer is Amazon and the body is
-S3's own XML error (S3 answers AccessDenied for a missing key). Only the retired
-**Client 1.x** lives on that CDN, under `/js/client/`, which returns 200.
-
-Twilio's Voice JS SDK docs offer **npm only** (`npm install @twilio/voice-sdk`).
-Unlike the *Video* SDK, which documents a `sdk.twilio.com` script tag, Voice 2.x
-publishes no CDN URL — so that path never existed. It looks right because Video
-uses a similar path and Client 1.x used `/js/client/`.
-
-**Fix:** load the published npm package from a CDN, pinned exactly:
-
-```html
-<script src="https://cdn.jsdelivr.net/npm/@twilio/voice-sdk@2.18.3/dist/twilio.min.js"></script>
-```
-
-No JS changes were needed — the UMD bundle ends with
-`root.Twilio=root.Twilio||{}; Twilio.Device=Twilio.Device||Voice.Device`, so the
-existing `new Twilio.Device(...)` works. Pinned rather than `@2` so the page
-cannot change under the demo.
-
-Verified in a real browser against the deployment: `typeof Twilio === "object"`,
-`Twilio.Device` is a constructor, and the header reaches
-**"softphone ready (browser-agent)"** — i.e. it actually registered with Twilio.
-
-**Gotcha while verifying:** the browser served a *cached* copy of the page and
-kept showing the old error after the fix deployed, even though `curl` showed the
-new tag. Hard-refresh (or add a query string) before concluding a front-end fix
-did not work.
-
-### 17. Human handoff failed: Studio rejects outbound calls — ✅ FIXED 2026-08-10
-The caller heard **"an application error has occurred"** and the transfer never
-happened.
+Symptom: the caller heard **"an application error has occurred"** and the transfer
+never happened.
 
 Twilio's Debugger showed error **11200 — Got HTTP 400** from the Studio flow
-webhook, and `GET /v2/Flows/{sid}/Executions` returned **zero executions**, so
+webhook, and `GET /v2/Flows/{sid}/Executions` returned **zero executions** — so
 Studio rejected the request before any widget ran. The flow was `valid: true`,
-published, correctly structured, and `HandoffData` arrived well-formed — all red
+published, correctly structured, and `HandoffData` arrived well-formed. All red
 herrings.
 
-Root cause, isolated by replaying that webhook with a valid signature and
-changing exactly one variable:
+Root cause, isolated by replaying the webhook with a valid signature and changing
+exactly one variable:
 
 | `Direction` | Studio response |
 |---|---|
 | `outbound-api` | **400** (body: bare `<Response/>`) |
 | `inbound` | **200** + valid `<Dial>` TwiML |
 
-**Studio's `?Trigger=incomingCall` webhook does not accept `Direction=outbound-api`
-calls.** TAC's `studio_voice_handoff_url` points `<Connect action>` at exactly
-that endpoint, so **the built-in Studio voice handoff cannot work for a call
-placed via `calls.create`** — which is this entire demo. No flow revision could
-have fixed it. (Worth reporting upstream alongside #1.)
-
-Note Studio returns a bare `<Response/>` body with its 4xx and no error message,
-which is why the debugger alert looks empty. An unsigned replay returns 401 and
-a signed-but-outbound one returns 400 — useful for telling auth problems apart
-from request problems.
+`tac.tools.handoff.studio_voice_handoff_url()` points `<Connect action>` at
+`?Trigger=incomingCall`, so **the built-in Studio voice handoff cannot work for a
+call placed via `calls.create`.** No flow revision fixes it. An *inbound* TAC demo
+is unaffected.
 
 **Fix:** `VoiceChannel._resolve_action_url` checks
 `default_twiml_options.action_url` **before** `studio_handoff_flow_sid`, so
-`app.py` sets `action_url` to our own `/handoff` route (`web.py`) which dials
-`<Client>browser-agent</Client>` itself, signature-validated with TAC's own
-`build_http_signature_dependency`. TAC's handoff tool still does the real work:
-the goodbye line, ending the relay session, and attaching `HandoffData`.
+`app.py` sets `action_url` to the `/handoff` route in `web.py`, which dials
+`<Client>browser-agent</Client>` itself (signature-validated with the SDK's own
+`build_http_signature_dependency`). TAC's handoff tool still does the real work:
+the goodbye line, ending the relay session, attaching `HandoffData`.
 
-`callerId` is our own `TWILIO_PHONE_NUMBER`. The Studio flow used
-`{{contact.channel.address}}`, which on an *outbound* call resolves to the
-customer's number — not ours, and not valid to dial as.
+`callerId` is our own `TWILIO_PHONE_NUMBER`. Studio's console-generated
+`{{contact.channel.address}}` resolves to the *other party* — fine inbound, wrong
+outbound.
 
-**Correction to an earlier note in this file:** #8 previously claimed
-`_resolve_action_url` returns the Studio URL "for EVERY call as soon as the SID
-is configured". That is only true when no `action_url` is set; the explicit
-option wins.
+**Debugging notes for this class of failure:** Studio answers 4xx with a bare
+`<Response/>` and no error message, so the Debugger alert looks empty. Zero
+executions proves the rejection happened before any widget, which rules out widget
+config. Replaying the webhook yourself separates the cases: unsigned → 401, signed
+but outbound → 400.
 
-### 18. Agent sent the payment link on the first "yes" — ✅ FIXED 2026-08-10
+---
+
+## Won't fix
+
+### 14. Two deployments collide on the softphone identity
+Running locally and on a hosted URL at the same time works for outbound calls —
+TAC builds the ConversationRelay `wss://` URL and the SMS link **per call** from
+that instance's `TWILIO_VOICE_PUBLIC_DOMAIN`.
+
+But every landing page registers as Twilio Client `browser-agent`
+(`web.py: BROWSER_AGENT_IDENTITY`), so with two pages open a handoff rings an
+ambiguous target. **Workaround: keep one landing page open.** Making the identity
+configurable isn't enough on its own — anything dialing a literal client name has
+to agree with it.
+
+---
+
+## Fixed — with lessons worth keeping
+
+### 11. Knowledge retrieval: two chunking traps
+We briefly pointed the knowledge base at a vendor help-center URL as a **Web**
+source. Twilio's crawler reported `COMPLETED` with no error but indexed **1 chunk
+/ 579 chars** of pure navigation text — no article bodies, no linked pages
+followed, at `crawlDepth: 3`. That's the signature of a JS-rendered help center:
+the crawler gets the static shell. It was actively harmful while present — as the
+only chunk it matched *every* query at score 0.8.
+
+The KB now holds a single Text source built from `knowledge/renewal-faq.md`,
+verified **7/7** on the demo's question set. Two lessons, both learned the hard
+way:
+
+- **Never index a preamble or disclaimer.** A leading "Load this document into…"
+  note becomes its own chunk and *wins* the semantic search. One upload answered
+  "When does my subscription renew?" with a disclaimer at score 1.0 — the agent
+  would have read it aloud to the caller.
+- **Make each Q&A self-contained.** With `## heading` + body, the chunker splits
+  the question from its answer and "what happens if my payment fails" returns the
+  *update payment method* chunk. Restating the question inside each answer fixed
+  every mismatch.
+
+For real vendor content, try `crawlDepth: 10`, a sitemap URL, or a specific
+article URL rather than an SPA hub.
+
+### 15. A TLS-terminating proxy broke every Twilio signature check
+Only reproducible when deployed. The live log showed four consecutive
+`POST /twilio/call-events/status -> 403 Forbidden`.
+
+Twilio signs the full request URL, and TAC validates that signature on `/twiml`,
+the relay action callback, the call-event callbacks **and the `/ws` upgrade** — so
+this broke the entire voice path, not just status events.
+
+Diagnosed by signing candidate URLs and seeing which the deployed app accepted: it
+accepted `http://…` and rejected `https://…`. The proxy terminated TLS and
+forwarded plain HTTP, so `X-Forwarded-Proto` arrived as `http`.
+
+`uvicorn --proxy-headers` **cannot** fix this: `_build_url`
+(`tac/server/signature_validation.py`) reads the `X-Forwarded-Proto` header
+directly and prefers it over the ASGI scheme, so the header itself must change.
+
+**Fix:** `TrustProxyHTTPS` in `app.py`, a pure-ASGI middleware gated on
+`TRUST_PROXY_HTTPS=1`. Pure ASGI because `@app.middleware("http")` never sees
+`websocket` scopes. Leave it unset under ngrok, which forwards the header
+correctly. Verified live: signed `https://` webhook → 200, signed `wss://` → 101
+Connected, forged signature → 403.
+
+### 16. Voice JS SDK 2.x isn't on `sdk.twilio.com`
+The landing page reported **"softphone error: Twilio is not defined"**, so the
+handoff had nothing to ring. (The message came from #9's error handler doing its
+job — without it this would have been silent.)
+
+Root cause was the `<script src>`, not the JavaScript.
+`sdk.twilio.com/js/voice/releases/<any version>/twilio.min.js` returns **403
+`AccessDenied` from `AmazonS3`** — S3's answer for a missing key. Only the retired
+**Client 1.x** lives on that CDN, under `/js/client/`. Twilio's Voice JS SDK docs
+offer **npm only**; unlike the Video SDK they publish no CDN URL, so that path
+never existed. It looks right because Video uses a similar path.
+
+**Fix:** load `@twilio/voice-sdk` from a CDN, pinned to an exact version. No JS
+changes were needed — the UMD bundle sets `globalThis.Twilio.Device`.
+
+**Gotcha while verifying:** the browser served a cached page and kept showing the
+old error after the fix deployed, even though `curl` showed the new tag.
+Hard-refresh before concluding a front-end fix didn't work.
+
+### 18. The agent sent the payment link on the first "yes"
 Confirmed on a live call: the agent fired `send_payment_link` immediately instead
-of having a conversation.
+of having a conversation. Not a plumbing fault — the OpenAI key was valid and the
+message-ready callback was registered.
 
-Not a plumbing fault — the OpenAI key is valid and
-`tac.on_message_ready(handle_message_ready)` is registered. It was the prompt.
-`VOICE_INSTRUCTIONS` said *"If the customer **agrees**, thanks you, or asks for
-the link, use the send_payment_link tool"*, while the welcome greeting ends with
-*"Is now an okay time?"* — so the customer's first word is "yes", which satisfies
-"agrees" and triggers the tool on turn one. "thanks you" was equally loose;
-people say thanks constantly.
+The prompt said *"If the customer **agrees**, thanks you, or asks for the link, use
+the send_payment_link tool"*, while the welcome greeting ends with *"Is now an okay
+time?"* — so the caller's first word is "yes", which satisfies "agrees" and fires
+the tool on turn one. "thanks you" was equally loose; people say thanks constantly.
 
-**Fix:** the prompt now states explicitly that a plain "yes"/"sure"/"okay" in
-reply to "is now a good time" is **not** permission to send a text, that being
-thanked is not permission either, that the agent must *offer* the link and wait,
-and that the link may be sent at most once per call. Also tightened: never read a
-URL aloud, never guess at policy, and handle "bad time" by ending politely
-without sending.
+**Fix:** the prompt now states that a plain "yes"/"sure"/"okay" in reply to "is now
+a good time" is **not** permission to send a text, that being thanked isn't either,
+that the agent must *offer* the link and wait, and that it sends at most once per
+call. Also tightened: never read a URL aloud, never guess at policy, and end
+politely on a bad time without sending.
 
-Lesson for any tool-calling prompt: **describe the trigger in terms the model
-cannot satisfy accidentally.** "Agrees" and "thanks you" are states that occur in
-almost every polite exchange; "has asked for the link, or agreed to receive a
-text" is narrow enough to be safe.
+**Lesson:** describe tool triggers in terms the model cannot satisfy by accident.
+"Agrees" and "thanks you" occur in almost every polite exchange; "has asked for the
+link, or agreed to receive a text" is narrow enough to be safe.
+
+### 5. SMS replies inherited the voice prompt
+An inbound SMS reply arrives on a new `conversation_id` with empty history, so a
+single shared prompt told a texter they were "on an outbound phone call" and
+invited a second link on "thanks!".
+
+**Fix:** `handle_message_ready` branches on `context.channel` for both the prompt
+(`VOICE_INSTRUCTIONS` / `SMS_INSTRUCTIONS`) and the tool set. The payment-link and
+handoff tools are voice-only; the knowledge tool stays available on both.
+
+### 8. Any relay-session death rang the browser
+Twilio requests the action URL whenever **any** ConversationRelay session ends, not
+only on a handoff — so an unguarded transfer path rings the browser on a dropped
+websocket.
+
+**Fixed as part of #17:** `/handoff` dials only when the request carries
+`HandoffData`, and returns `<Hangup/>` otherwise.
+
+---
+
+## Fixed — routine
+
+| # | Issue | Fix |
+|---|---|---|
+| 2 | A missing Studio flow SID made `create_studio_handoff_tool` raise on every utterance; the voice channel swallows it, so the whole agent went silent | Guard on the flow SID and degrade to "no handoff tool" (`get_handoff_tool`) |
+| 3 | `configure_injection()` mutates a module-level tool in place and returns `self`, so a shared instance leaks one caller's session into another's turn | `create_send_payment_link_tool()` builds a fresh tool per message |
+| 4 | A failed "Call me" was invisible: the server publishes SSE only after Twilio accepts the call | `static/index.html` checks `res.ok` and renders an error line |
+| 6 | `studio-flow.json` lacked `caller_id`, which console-built widgets export | Added. Since moot — Studio is no longer in the handoff path (#17) |
+| 7 | `TACFastAPIServer` registers its routes in the constructor, which only ran under `__main__`, so `uvicorn app:app` served the page with no `/twiml` or websocket | Constructed at module scope; only `start()` stays under the guard |
+| 9 | The softphone token expires after ~1h with no listeners, so the header still claimed "ready" while the Device was unregistered | `tokenWillExpire` refresh plus `error` / `unregistered` handlers |
+| 10 | `memory_response` was always `None` (both channels use `memory_mode="never"`) while a hand-rolled history dict did the real work | Renamed `_memory_response` with a note on enabling TAC memory |
+| 12 | The agent's persona and the knowledge base named different companies, so renewal answers quoted another company's policy | Knowledge base rebuilt from `knowledge/renewal-faq.md`; both are consistent |

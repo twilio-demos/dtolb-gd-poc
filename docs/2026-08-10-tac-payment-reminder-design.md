@@ -1,5 +1,10 @@
 # Design: TAC Payment Reminder Demo (2026-08-10)
 
+> **Historical record of the approved design.** One decision did not survive
+> contact with the platform: the handoff no longer runs through a Studio flow,
+> because Studio's voice webhook rejects outbound-api calls. `/handoff` serves the
+> transfer TwiML instead. See KNOWN-ISSUES #17, and HANDOFF.md for current state.
+
 Teaching demo for hackathon teams: how the Twilio Agent Connect (TAC) Python
 SDK connects an LLM to Twilio voice/SMS, and how tools are wired through TAC.
 Explicitly sample code — in-memory state, no auth, no edge-case engineering.

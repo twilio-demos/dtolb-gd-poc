@@ -56,8 +56,9 @@ that has already happened once:
 | `studio-flow.json` | Vestigial. Studio can't serve outbound calls (#17); kept only so the Flow SID resolves |
 | `knowledge/renewal-faq.md` | Owl Shoes renewal FAQ — the Enterprise Knowledge content |
 | `Dockerfile`, `.dockerignore` | twl deploy (linux/arm64, one `EXPOSE 8000`) |
+| `HANDOFF.md` | Status, architecture, and the traps — the doc to hand a new person |
 | `KNOWN-ISSUES.md` | 18 findings, current status per issue |
-| `zscaler_issues.md` | ngrok is blocked by corporate TLS interception; partial workaround |
+| `zscaler_issues.md` | ngrok vs. corporate TLS interception; partial workaround |
 | `docs/2026-08-10-tac-payment-reminder-design.md` | Approved design + decisions |
 | `README.md` | Setup walkthrough (provisioning, both public-domain options) |
 
@@ -70,7 +71,7 @@ all verified working through the proxy with real Twilio signatures.
 **Provisioned on Twilio** (IDs live in `.env`, which is gitignored): memory
 store, conversation configuration, Enterprise Knowledge base (Owl Shoes FAQ,
 verified 7/7 on the demo's questions), Studio handoff flow, and phone number
-`+18782832270` in Messaging Service `MGe7c2929facff307d2dab6a5d36b35f52`. The
+`+1XXXXXXXXXX` in Messaging Service `MG…(your Messaging Service)`. The
 Studio flow exists but is no longer invoked (#17).
 
 **Read `KNOWN-ISSUES.md` before changing code.** #1–#12 and #15–#18 are fixed.
