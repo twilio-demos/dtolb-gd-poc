@@ -28,13 +28,15 @@ heavily commented, composed from the TAC repo's own `getting_started/examples`
 
 ### Three things that look like hardening but are NOT — do not remove
 
-The demo is deployed to a **public** domain, which changes the calculus for
-exactly three things. Each is a handful of lines, each is env-gated so local
-dev behaves as before, and each was added after a real observed failure:
+Each item below is a handful of lines, and **every one was added after a real
+observed failure** — not defensively. Deleting any of them reintroduces a bug
+that has already happened once:
 
 | Thing | Where | Why it must stay |
 |---|---|---|
 | `TrustProxyHTTPS` middleware | `app.py` | Without it, **every** Twilio signature check 403s behind a TLS-terminating proxy — webhooks *and* the ConversationRelay websocket. KNOWN-ISSUES #15. |
+| `action_url` → `/handoff` route | `app.py`, `web.py` | The built-in Studio handoff **cannot work on outbound calls** — Studio answers 400 for `Direction=outbound-api`. Removing this returns the demo to "an application error has occurred". KNOWN-ISSUES #17. |
+| The narrow consent wording in `VOICE_INSTRUCTIONS` | `app.py` | Loose triggers ("agrees", "thanks you") made the agent text the payment link on the caller's first "yes". KNOWN-ISSUES #18. |
 | `DEMO_ALLOWED_NUMBERS` guard | `web.py` `trigger_call` | `POST /api/call` places real billed calls to any number with no auth. On a stable public URL that is an open robocall endpoint. |
 | `uv.lock` tracked in git | repo root | Pins the TAC **git** dependency to one commit. Unpinned, the Pi builds against upstream `main` and the #1 workaround breaks (it calls `.model_dump()` on what would become plain dicts). |
 
@@ -43,13 +45,13 @@ dev behaves as before, and each was added after a real observed failure:
 | File | Role |
 |---|---|
 | `app.py` | All TAC: channels, LLM loop, the 3 tools, outbound call, `TrustProxyHTTPS` |
-| `web.py` | Landing-page routes: trigger call (+ allowlist guard), SSE, softphone token, tracked `/pay/<id>` |
+| `web.py` | Landing-page routes: trigger call (+ allowlist guard), SSE, softphone token, `/handoff` transfer TwiML, tracked `/pay/<id>` |
 | `events.py` | ~40-line in-memory SSE hub |
 | `static/index.html` | Landing page + Twilio Voice JS softphone (`browser-agent`) |
-| `studio-flow.json` | Importable flow: incoming call → Split on `HandoffData` → Connect Call To Client |
+| `studio-flow.json` | Vestigial. Studio can't serve outbound calls (#17); kept only so the Flow SID resolves |
 | `knowledge/renewal-faq.md` | Owl Shoes renewal FAQ — the Enterprise Knowledge content |
 | `Dockerfile`, `.dockerignore` | twl deploy (linux/arm64, one `EXPOSE 8000`) |
-| `KNOWN-ISSUES.md` | 15 findings, current status per issue |
+| `KNOWN-ISSUES.md` | 18 findings, current status per issue |
 | `zscaler_issues.md` | ngrok is blocked by corporate TLS interception; partial workaround |
 | `docs/2026-08-10-tac-payment-reminder-design.md` | Approved design + decisions |
 | `README.md` | Setup walkthrough (provisioning, both public-domain options) |
@@ -63,30 +65,30 @@ all verified working through the proxy with real Twilio signatures.
 **Provisioned on Twilio** (IDs live in `.env`, which is gitignored): memory
 store, conversation configuration, Enterprise Knowledge base (Owl Shoes FAQ,
 verified 7/7 on the demo's questions), Studio handoff flow, and phone number
-`+18782832270` in Messaging Service `MGe7c2929facff307d2dab6a5d36b35f52`.
+`+18782832270` in Messaging Service `MGe7c2929facff307d2dab6a5d36b35f52`. The
+Studio flow exists but is no longer invoked (#17).
 
-**Read `KNOWN-ISSUES.md` before changing code.** #1–#7, #9–#12, #15 are fixed;
-each fix was adversarially reviewed and verified against the installed SDK
-source. Three items remain open:
+**Read `KNOWN-ISSUES.md` before changing code.** #1–#12 and #15–#18 are fixed.
+Two items remain open, neither of them code:
 
-- **#8** — the handoff gate exists in `studio-flow.json` but the Twilio flow is
-  still on **revision 1** (ungated). Publishing revision 2 activates it. Awaiting
-  a human decision because a wrong `HandoffData` assumption breaks handoff
-  entirely, and only a live call can prove it.
 - **#13** — the A2P 10DLC campaign is `IN_PROGRESS`, so US SMS from the demo
   number is **blocked** with error 30034. The SMS leg cannot work until it
   verifies. Nothing to code.
-- **#1 upstream** — a bug report for `twilio-agent-connect-python` is drafted in
-  KNOWN-ISSUES #1 but **not filed**. Filing is public; ask first.
+- **#1 / #17 upstream** — bug reports for `twilio-agent-connect-python` are
+  drafted (serialization in #1; Studio handoff being unusable on outbound calls
+  in #17) but **not filed**. Filing is public; ask first.
+
+**Verified on a real call:** the outbound call, the LLM turns, the knowledge
+tool, and the human handoff to the browser softphone all work end to end.
 
 ## Verification bar
 
 - Done: `uv sync`, import smoke tests, SDK symbol checks, `py_compile`, a real
-  containerized deploy, and live signature verification (signed `https://`
-  webhook → 200, signed `wss://` upgrade → 101, forged signature → 403).
-- **Never done: a full end-to-end call with a human on the line.** "Fixed"
-  in KNOWN-ISSUES means reviewed and compiling, not demoed. Do not claim
-  otherwise.
+  containerized deploy, live signature verification (signed `https://` webhook →
+  200, signed `wss://` upgrade → 101, forged signature → 403), and **a real
+  end-to-end call including the human handoff**.
+- The SMS leg is the one path **never exercised** — it is blocked by #13 until
+  the 10DLC campaign verifies. Don't claim it works.
 - Do **not** place test calls or send test SMS without asking — both cost money
   and ring a real phone.
 

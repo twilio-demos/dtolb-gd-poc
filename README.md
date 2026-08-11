@@ -10,7 +10,7 @@ information, while a landing page watches the whole call live.
 |---|---|---|
 | "Thanks, text me the link" | Agent texts a **tracked payment link**; the click streams to the dashboard | custom `@function_tool` → `sms_channel.initiate_outbound_conversation` |
 | "When does my plan renew?" | Agent answers from the **knowledge base** | built-in `create_knowledge_tool` (Enterprise Knowledge) |
-| "Get me a human" | The **landing page rings** (browser softphone) and you take over the call | built-in `create_studio_handoff_tool` → Studio flow → `<Client>browser-agent` |
+| "Get me a human" | The **landing page rings** (browser softphone) and you take over the call | built-in `create_studio_handoff_tool` → `action_url` → `/handoff` → `<Client>browser-agent` |
 
 > ⚠️ Demo code for a hackathon audience. In-memory state, no auth, no retries,
 > single user. Read it, steal from it — don't ship it.
@@ -24,7 +24,7 @@ landing page ──POST /api/call──▶ app.py ──TAC VoiceChannel──�
      │                            ▼
      └──────── events.py ◀── handle_message_ready() ──▶ OpenAI Agents SDK
                                                           │  ├─ send_payment_link (custom tool)
-     browser softphone ◀── Studio flow ◀── handoff ───────┘  ├─ search_renewal_faq (TAC knowledge tool)
+     browser softphone ◀── /handoff TwiML ◀─ handoff ─────┘  ├─ search_renewal_faq (TAC knowledge tool)
      (Voice JS SDK)                                          └─ connect_to_human_agent (TAC handoff tool)
 ```
 
@@ -33,13 +33,22 @@ landing page ──POST /api/call──▶ app.py ──TAC VoiceChannel──�
 - **`events.py`** — 40-line SSE hub.
 - **`static/index.html`** — the landing page (vanilla JS + Twilio Voice JS SDK).
 - **`Dockerfile`** — for deploying to the `twl` dev box (linux/arm64).
-- **[`KNOWN-ISSUES.md`](KNOWN-ISSUES.md)** — 15 findings and their current status.
+- **[`KNOWN-ISSUES.md`](KNOWN-ISSUES.md)** — 18 findings and their current status.
   **Read this before trusting any part of the demo**; a few things are still open.
 
 The voice handoff is the neat part: the LLM calls `connect_to_human_agent`,
-TAC finishes speaking the goodbye sentence, ends the ConversationRelay
-session, and Twilio hands the **still-live call** to your Studio flow — which
-dials the `browser-agent` client, ringing the landing page.
+TAC finishes speaking the goodbye sentence, ends the ConversationRelay session,
+and Twilio hands the **still-live call** to the `action_url` — our `/handoff`
+route — which dials the `browser-agent` client, ringing the landing page.
+
+> **Why not Studio?** TAC's built-in Studio handoff points `<Connect action>` at
+> `webhooks.twilio.com/…/Flows/{sid}?Trigger=incomingCall`, and that endpoint
+> answers **HTTP 400 for `Direction=outbound-api`** calls (verified by replaying
+> it with only `Direction` changed). This demo dials out, so the Studio path
+> cannot work here at any flow revision — the caller just hears "an application
+> error has occurred". `/handoff` serves the transfer TwiML instead and gates on
+> `HandoffData` so a dead relay session doesn't ring the browser. See
+> KNOWN-ISSUES #17.
 
 ## Setup (one time, ~15 minutes)
 
@@ -95,20 +104,25 @@ as `TWILIO_VOICE_PUBLIC_DOMAIN` — it's also the domain in the SMS payment link
 See [Two ways to be publicly reachable](#two-ways-to-be-publicly-reachable) for
 ngrok vs. the twl dev box, and the extra env var the latter requires.
 
-### 4. Studio flow (rings the browser on handoff)
+### 4. Studio flow (optional — NOT used for handoff)
+
+> Handoff no longer goes through Studio (see the note under
+> [How it works](#how-it-works) and KNOWN-ISSUES #17) — `/handoff` serves the
+> transfer TwiML directly. You still need a Flow SID in `.env` because TAC's
+> `create_studio_handoff_tool` requires one to build the handoff tool at all;
+> the flow itself is never invoked.
 
 1. Twilio Console → **Studio** → **Create new Flow** → name it, choose **Import from JSON**.
 2. Paste the contents of [`studio-flow.json`](studio-flow.json) and publish.
 3. Put the Flow SID (`FW…`) in `.env` as `TWILIO_STUDIO_HANDOFF_FLOW_SID`.
 
 The flow is two widgets: incoming call → **Split Based On `{{trigger.call.HandoffData}}`**
-→ **Connect Call To → Client `browser-agent`**.
+→ **Connect Call To → Client `browser-agent`**. It is kept only so the SID
+resolves to something real; nothing invokes it.
 
-The Split is load-bearing. Once `TWILIO_STUDIO_HANDOFF_FLOW_SID` is set, TAC points
-*every* call's `<Connect action>` at this flow — not just handoffs — so a dropped
-websocket would otherwise ring the browser as if the customer had asked for a
-human. Only a real handoff carries `HandoffData`, so the Split gates on it and the
-`noMatch` branch deliberately dead-ends (the relay session is already gone).
+The equivalent gate now lives in `/handoff`, which dials only when the request
+carries `HandoffData` and returns `<Hangup/>` otherwise — Twilio hits that URL
+whenever *any* relay session ends, not just on a handoff.
 
 ### 5. Knowledge base (renewal FAQ)
 

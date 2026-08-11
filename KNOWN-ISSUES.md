@@ -10,8 +10,7 @@ found the same day while provisioning the Twilio account.
 | | Issues |
 |---|---|
 | ✅ Fixed & reviewed | #1, #2, #3, #4, #5, #6, #7, #9, #10 |
-| ⚠️ Fixed locally, **needs re-publish to Twilio** | #8 |
-| ✅ Fixed & verified on the live deployment | #15 (proxy signature 403s), #16 (softphone SDK URL) |
+| ✅ Fixed & verified on the live deployment | #15 (proxy signatures), #16 (softphone SDK URL), #17 (handoff), #18 (prompt) |
 | ✅ Resolved during provisioning | #11 (KB content), #12 (branding) |
 | ⏳ Blocked on Twilio approval | #13 (A2P 10DLC → SMS leg) |
 | ℹ️ Won't fix — documented workaround | #14 (dual-deploy softphone identity) |
@@ -129,32 +128,21 @@ Publish or dial the client without caller ID. Fix: add the property.
 404s. Fix: construct the server at module scope; keep only `server.start()`
 under the guard.
 
-### 8. Any relay-session death rings the browser — ⚠️ FIXED LOCALLY, NEEDS RE-PUBLISH
-With the flow SID set, TAC points every call's `<Connect action>` at the
-Studio flow, and our flow dials `browser-agent` unconditionally. A websocket
-drop / repeated callback crash on a live call rings "Customer wants a human!"
-unprompted. Fix: gate the flow on handoff data (or set an explicit
-`action_url` for non-handoff cleanup).
+### 8. Any relay-session death rings the browser — ✅ FIXED 2026-08-10
+With a flow SID set, TAC pointed *every* call's `<Connect action>` at the Studio
+flow, and the flow dialed `browser-agent` unconditionally — so a websocket drop
+on a live call rang "Customer wants a human!" unprompted.
 
-**⚠️ DRIFT: the local file is ahead of what's live on Twilio.**
-`studio-flow.json` now contains the gate — a `split-based-on` widget between the
-Trigger and the dial, testing `{{trigger.call.HandoffData}}` for
-`conversationId`, with `noMatch` deliberately dead-ending. Verified against the
-SDK: `VoiceChannel._resolve_action_url` (`tac/channels/voice/channel.py:393-397`)
-returns the Studio handoff URL for **every** call once the flow SID is set, and
-`HandoffData` is present only when TAC sent the WS `end` message
-(`channel.py:1144-1149`) — so it is the only runtime discriminator available.
+**Fixed as a side effect of #17.** The action URL is now our own `/handoff`
+route, which dials only when the request carries `HandoffData`; any other
+relay-session end gets `<Hangup/>`. Verified against the deployment with signed
+requests: `HandoffData` present → `<Dial><Client>browser-agent</Client></Dial>`,
+absent → `<Hangup/>`, forged signature → 403.
 
-But flow `FW3ffc6d00f903d291b16cbd134cc474f5` is **still on revision 1**
-(ungated). Publishing revision 2 activates the fix; the SID does not change, so
-`.env` needs no edit.
-
-Before publishing, know the failure mode: if `{{trigger.call.HandoffData}}`
-arrives empty in the Studio execution, *every* call takes `noMatch` and handoff
-breaks completely — trading an over-eager ring for no ring at all. This cannot be
-verified without a live call. Check the trigger parameters in a Studio execution
-log first. If Studio rejects the `contains` condition on import, the fallback is
-`"type": "regex", "value": "conversationId"`.
+The earlier plan — a `split-based-on` widget in `studio-flow.json` gating on
+`{{trigger.call.HandoffData}}` — is moot: Studio is no longer in this path at
+all (#17). That widget is still in `studio-flow.json` and harmless; the flow was
+never published past revision 1 and nothing points at it now.
 
 ### 9. Softphone token expires after ~1 hour, silently — ✅ FIXED 2026-08-10
 One token fetch (ttl 3600s), no `error` / `tokenWillExpire` listeners. Header
@@ -344,3 +332,72 @@ Verified in a real browser against the deployment: `typeof Twilio === "object"`,
 kept showing the old error after the fix deployed, even though `curl` showed the
 new tag. Hard-refresh (or add a query string) before concluding a front-end fix
 did not work.
+
+### 17. Human handoff failed: Studio rejects outbound calls — ✅ FIXED 2026-08-10
+The caller heard **"an application error has occurred"** and the transfer never
+happened.
+
+Twilio's Debugger showed error **11200 — Got HTTP 400** from the Studio flow
+webhook, and `GET /v2/Flows/{sid}/Executions` returned **zero executions**, so
+Studio rejected the request before any widget ran. The flow was `valid: true`,
+published, correctly structured, and `HandoffData` arrived well-formed — all red
+herrings.
+
+Root cause, isolated by replaying that webhook with a valid signature and
+changing exactly one variable:
+
+| `Direction` | Studio response |
+|---|---|
+| `outbound-api` | **400** (body: bare `<Response/>`) |
+| `inbound` | **200** + valid `<Dial>` TwiML |
+
+**Studio's `?Trigger=incomingCall` webhook does not accept `Direction=outbound-api`
+calls.** TAC's `studio_voice_handoff_url` points `<Connect action>` at exactly
+that endpoint, so **the built-in Studio voice handoff cannot work for a call
+placed via `calls.create`** — which is this entire demo. No flow revision could
+have fixed it. (Worth reporting upstream alongside #1.)
+
+Note Studio returns a bare `<Response/>` body with its 4xx and no error message,
+which is why the debugger alert looks empty. An unsigned replay returns 401 and
+a signed-but-outbound one returns 400 — useful for telling auth problems apart
+from request problems.
+
+**Fix:** `VoiceChannel._resolve_action_url` checks
+`default_twiml_options.action_url` **before** `studio_handoff_flow_sid`, so
+`app.py` sets `action_url` to our own `/handoff` route (`web.py`) which dials
+`<Client>browser-agent</Client>` itself, signature-validated with TAC's own
+`build_http_signature_dependency`. TAC's handoff tool still does the real work:
+the goodbye line, ending the relay session, and attaching `HandoffData`.
+
+`callerId` is our own `TWILIO_PHONE_NUMBER`. The Studio flow used
+`{{contact.channel.address}}`, which on an *outbound* call resolves to the
+customer's number — not ours, and not valid to dial as.
+
+**Correction to an earlier note in this file:** #8 previously claimed
+`_resolve_action_url` returns the Studio URL "for EVERY call as soon as the SID
+is configured". That is only true when no `action_url` is set; the explicit
+option wins.
+
+### 18. Agent sent the payment link on the first "yes" — ✅ FIXED 2026-08-10
+Confirmed on a live call: the agent fired `send_payment_link` immediately instead
+of having a conversation.
+
+Not a plumbing fault — the OpenAI key is valid and
+`tac.on_message_ready(handle_message_ready)` is registered. It was the prompt.
+`VOICE_INSTRUCTIONS` said *"If the customer **agrees**, thanks you, or asks for
+the link, use the send_payment_link tool"*, while the welcome greeting ends with
+*"Is now an okay time?"* — so the customer's first word is "yes", which satisfies
+"agrees" and triggers the tool on turn one. "thanks you" was equally loose;
+people say thanks constantly.
+
+**Fix:** the prompt now states explicitly that a plain "yes"/"sure"/"okay" in
+reply to "is now a good time" is **not** permission to send a text, that being
+thanked is not permission either, that the agent must *offer* the link and wait,
+and that the link may be sent at most once per call. Also tightened: never read a
+URL aloud, never guess at policy, and handle "bad time" by ending politely
+without sending.
+
+Lesson for any tool-calling prompt: **describe the trigger in terms the model
+cannot satisfy accidentally.** "Agrees" and "thanks you" are states that occur in
+almost every polite exchange; "has asked for the link, or agreed to receive a
+text" is narrow enough to be safe.
