@@ -4,20 +4,10 @@
 <meta charset="utf-8">
 <title>TAC Payment Reminder Demo</title>
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<!-- Twilio Voice JS SDK: turns this page into the "browser-agent" softphone
-     that the Studio flow rings on human handoff.
-
-     NOTE: unlike the Video SDK, Twilio does NOT publish the Voice SDK 2.x on
-     sdk.twilio.com — the docs offer npm only. A plausible-looking
-     sdk.twilio.com/js/voice/releases/<ver>/twilio.min.js returns 403
-     AccessDenied from S3 at every version (only the retired Client 1.x lives
-     under /js/client/), so `Twilio` never gets defined and the page reports
-     "softphone error: Twilio is not defined". We load the published npm package
-     from a CDN instead; its UMD bundle sets globalThis.Twilio.Device, which is
-     what the code below expects.
-
-     Pinned to an exact version on purpose: a floating @2 tag would let this
-     page change under the demo. -->
+<!-- Twilio Voice JS SDK: makes this page the "browser-agent" softphone that
+     /handoff dials. Voice SDK 2.x is published to npm only — there is no
+     sdk.twilio.com path for it — so this is the npm package via CDN, pinned so
+     the page can't change under the demo. Its UMD bundle defines Twilio.Device. -->
 <script src="https://cdn.jsdelivr.net/npm/@twilio/voice-sdk@2.18.3/dist/twilio.min.js"></script>
 <style>
   :root { --ink:#121c2d; --accent:#f22f46; --ok:#0d7d3f; --line:#e1e3ea; }
@@ -35,7 +25,7 @@
   button { font-size:15px; padding:10px 18px; border:0; border-radius:8px; cursor:pointer; font-weight:600; }
   #call-btn { background:var(--accent); color:#fff; }
   #call-btn:disabled { opacity:.5; cursor:default; }
-  /* incoming-call banner: hidden until the Studio flow dials this browser */
+  /* incoming-call banner: hidden until this browser is dialed */
   #incoming { display:none; background:#fff7e6; border:2px solid #f5a623; }
   #incoming.ringing { display:block; animation:pulse 1s infinite; }
   @keyframes pulse { 50% { box-shadow:0 0 0 6px rgba(245,166,35,.25); } }
@@ -53,7 +43,7 @@
   #feed li.tool         { color:#8a5a00; }
   #feed li.sms_sent, #feed li.link_clicked { color:var(--ok); font-weight:600; }
   #feed li.handoff      { color:var(--accent); font-weight:600; }
-  /* client-side only: rendered when the "Call me" POST fails (never an SSE type) */
+  /* client-side only: rendered when the "Call me" POST fails */
   #feed li.error        { color:var(--accent); font-weight:600; }
   .status-dot { display:inline-block; width:8px; height:8px; border-radius:50%; background:#bbb; margin-right:6px; }
   .status-dot.ok { background:var(--ok); }
@@ -100,8 +90,8 @@ const $ = (id) => document.getElementById(id);
 // ---------- Live event feed (Server-Sent Events) ----------
 const feed = $("feed");
 
-// Shared by the SSE stream and by our own client-side error lines.
-// Omit `time` and we stamp it ourselves in events.py's HH:MM:SS format.
+// Shared by the SSE stream and our own error lines. Without `time`, stamp it
+// in events.py's HH:MM:SS format.
 function addLine(type, text, time) {
   const li = document.createElement("li");
   li.className = type;
@@ -119,9 +109,8 @@ new EventSource("/events").onmessage = (msg) => {
 $("call-btn").onclick = async () => {
   $("call-btn").disabled = true;
   try {
-    // The server publishes SSE only *after* Twilio accepts the call, so a
-    // failure (unverified number on a trial account, blank field) would leave
-    // the feed silent unless we render it here.
+    // The server publishes SSE only after Twilio accepts the call, so a
+    // rejected request would leave the feed silent unless we render it here.
     const res = await fetch("/api/call", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -138,8 +127,8 @@ $("call-btn").onclick = async () => {
 };
 
 // ---------- Browser softphone (Twilio Voice JS SDK) ----------
-// Registers as client "browser-agent". When the caller asks for a human,
-// the AI's handoff tool ends its session and the Studio flow dials us here.
+// Registers as client "browser-agent". When the caller asks for a human, the
+// handoff tool ends the AI session and /handoff dials this client.
 let activeCall = null;
 
 async function fetchToken() {
@@ -148,7 +137,7 @@ async function fetchToken() {
   return (await res.json()).token;
 }
 
-// Grey dot + message: the header must stop claiming "ready".
+// Grey dot + message, so the header stops claiming "ready".
 function softphoneProblem(text) {
   $("softphone-status").innerHTML = '<span class="status-dot"></span>' + text;
 }
@@ -161,12 +150,11 @@ async function setupSoftphone() {
       '<span class="status-dot ok"></span>softphone ready (browser-agent)';
   });
 
-  // Voice access tokens are minted with ttl 3600s. Refresh on tokenWillExpire
-  // (fires ~10s before expiry) or the Device silently unregisters and the
-  // Studio handoff rings a client that is no longer there.
+  // Tokens have a 1 hour ttl. Without this refresh the Device silently
+  // unregisters and a handoff rings a client that is no longer listening.
   device.on("tokenWillExpire", async () => {
     try {
-      device.updateToken(await fetchToken());  // re-registers with the new token
+      device.updateToken(await fetchToken());
     } catch (err) {
       softphoneProblem("softphone token refresh failed: " + err.message);
     }

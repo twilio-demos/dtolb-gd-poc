@@ -8,9 +8,10 @@ only serve the demo UI and glue:
   POST /api/call    "Call me" button -> app.start_reminder_call()
   GET  /events      SSE stream of everything happening on the call
   GET  /token       access token so the page can register as Twilio Voice
-                    JS SDK client "browser-agent" (what the Studio flow dials)
-  GET  /pay/{id}    the "branded/tracked" link from the SMS — logs the click,
-                    pushes it to the live feed, shows a fake payment page
+                    JS SDK client "browser-agent"
+  POST /handoff     TwiML that transfers the live call to that browser client
+  GET  /pay/{id}    the tracked link from the SMS — logs the click, pushes it
+                    to the live feed, shows a fake payment page
 """
 
 import os
@@ -19,9 +20,9 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
-from tac.server import build_http_signature_dependency
 from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
+from tac.server import build_http_signature_dependency
 from twilio.jwt.access_token import AccessToken
 from twilio.jwt.access_token.grants import VoiceGrant
 
@@ -29,12 +30,10 @@ import events
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-# The Twilio Client identity the landing page registers as, and the Studio
-# flow dials. Keep in sync with studio-flow.json.
+# The Twilio Client identity the landing page registers as, and /handoff dials.
 BROWSER_AGENT_IDENTITY = "browser-agent"
 
-# link_id -> {"to": phone, "clicked": bool}; filled in by the
-# send_payment_link tool in app.py.
+# link_id -> {"to": phone, "clicked": bool}; filled in by app.send_payment_link.
 PAYMENT_LINKS: dict[str, dict[str, Any]] = {}
 
 
@@ -54,12 +53,9 @@ def create_router(
 
     @router.post("/api/call")
     async def trigger_call(body: CallRequest) -> dict[str, str]:
-        # This route places a REAL billed call to whatever number it is given,
-        # and the demo has no auth by design. That is fine on localhost or a
-        # throwaway ngrok URL, but on a stable public domain it is an open
-        # robocall endpoint. DEMO_ALLOWED_NUMBERS caps the blast radius:
-        # comma-separated E.164 numbers, exact match. Unset (local dev) = any
-        # number, i.e. the original behavior.
+        # This route places a real billed call to any number it is given and has
+        # no auth. DEMO_ALLOWED_NUMBERS (comma-separated E.164, exact match)
+        # caps that on a public deployment; unset means any number.
         allowed = [n.strip() for n in os.getenv("DEMO_ALLOWED_NUMBERS", "").split(",") if n.strip()]
         if allowed and body.phone.strip() not in allowed:
             raise HTTPException(403, "Number not in DEMO_ALLOWED_NUMBERS.")
@@ -73,8 +69,7 @@ def create_router(
 
     @router.get("/token")
     async def voice_token() -> dict[str, str]:
-        # Standard Twilio Voice JS SDK access token. incoming_allow is what
-        # lets the Studio flow's "Connect Call To > Client" ring this browser.
+        # incoming_allow is what lets /handoff's <Dial><Client> ring this page.
         token = AccessToken(
             tac_config.account_sid,
             tac_config.api_key,
@@ -84,36 +79,29 @@ def create_router(
         token.add_grant(VoiceGrant(incoming_allow=True))
         return {"token": token.to_jwt(), "identity": BROWSER_AGENT_IDENTITY}
 
-    # Where the still-live call lands once ConversationRelay ends (app.py points
-    # default_twiml_options.action_url here). TAC would otherwise send it to the
-    # Studio flow, but Studio's ?Trigger=incomingCall webhook answers HTTP 400
-    # for outbound-api calls — proven by replaying that webhook with only
-    # Direction changed — so on a dial-out demo the caller just hears
-    # "an application error has occurred". See KNOWN-ISSUES #17.
-    #
-    # Gating on HandoffData is what fixes KNOWN-ISSUES #8 too: Twilio hits this
-    # URL when ANY relay session ends, so without the check a dropped websocket
-    # would ring the browser as though the customer had asked for a human.
-    # Only a real handoff carries HandoffData.
     @router.post(
         "/handoff",
         include_in_schema=False,
         dependencies=[Depends(build_http_signature_dependency(tac_config.auth_token))],
     )
     async def handoff(request: Request) -> Response:
+        """Transfer the still-live call to the browser softphone.
+
+        app.py points default_twiml_options.action_url here. Twilio requests it
+        whenever a ConversationRelay session ends, not only on a handoff, so we
+        dial only when HandoffData is present — otherwise a dropped websocket
+        would ring the browser unprompted.
+        """
         form = await request.form()
         if form.get("HandoffData"):
             events.publish("handoff", "Transferring the call to the browser agent")
-            # callerId must be a number this account owns. The Studio flow used
-            # {{contact.channel.address}}, which on an outbound call is the
-            # customer's own number — not ours, and not valid to dial as.
+            # callerId must be a number this account owns.
             body = (
                 f'<Dial callerId="{tac_config.phone_number}" timeout="30">'
                 f"<Client>{BROWSER_AGENT_IDENTITY}</Client>"
                 f"</Dial>"
             )
         else:
-            # Normal end of call, or a dead relay session. Nothing to transfer.
             body = "<Hangup/>"
         return Response(
             content=f'<?xml version="1.0" encoding="UTF-8"?><Response>{body}</Response>',

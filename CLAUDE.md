@@ -13,15 +13,20 @@ call over SSE.
 **Why:** show other teams *how TAC integrates with an LLM and how tools are
 sent through the TAC SDK*. TAC is the entry point for all Twilio
 communications. The code is intentionally "sample code" — readable and
-heavily commented, composed from the TAC repo's own `getting_started/examples`
-(`outbound.py`, `handoff.py`, `voice_call_events.py`, `dashboard/`).
+composed from the TAC repo's own `getting_started/examples` (`outbound.py`,
+`handoff.py`, `voice_call_events.py`, `dashboard/`).
 
 ## Hard constraints
 
 - **Do NOT production-harden.** No auth, persistence, retries, multi-user
   handling, or race-condition engineering. In-memory dicts are deliberate.
-- Optimize for readability over engineering excellence; keep the inline
-  comments that mark each TAC integration point.
+- Optimize for readability over engineering excellence.
+- **Comment style: senior, sparse, present-tense.** Comment only what the code
+  cannot say itself — a non-obvious *why*, a constraint, an SDK gotcha. Do not
+  narrate debugging history ("observed live…", "verified by replaying…"), do not
+  restate the code, and do not scatter KNOWN-ISSUES numbers through the source;
+  that archaeology belongs in KNOWN-ISSUES.md. The comments were pruned hard on
+  2026-08-10 — don't grow them back.
 - Everything Twilio goes through the TAC SDK where possible.
 - LLM runtime is the OpenAI Agents SDK (TAC tools convert via
   `.to_openai_agents_sdk_tool()`).

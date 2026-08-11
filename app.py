@@ -3,17 +3,13 @@ TAC payment-reminder demo — main app.
 
 An AI agent places an outbound call reminding the customer to update their
 payment information. On the call the customer can:
-  - say "thanks, text me the link"  -> custom TAC tool sends an SMS with a tracked link
-  - ask renewal questions           -> TAC's built-in knowledge tool (Enterprise Knowledge)
-  - say "get me a human"            -> TAC's built-in Studio handoff tool; the Studio
-                                       flow dials the browser softphone on the landing
-                                       page (Twilio Voice JS SDK identity "browser-agent")
+  - ask for the payment link      -> custom TAC tool sends an SMS with a tracked link
+  - ask renewal questions         -> TAC's built-in knowledge tool (Enterprise Knowledge)
+  - ask for a human               -> TAC's built-in handoff tool; /handoff then dials
+                                     the browser softphone (Voice JS client "browser-agent")
 
 Everything Twilio goes through the TAC SDK. The landing page at / watches the
 whole call live over SSE.
-
-Modeled on the TAC repo examples: features/outbound.py, features/handoff.py,
-features/voice_call_events.py, features/dashboard/.
 
 Run:  uv run python app.py   (see README for the one-time Twilio setup)
 """
@@ -45,59 +41,37 @@ from tac.tools.knowledge import create_knowledge_tool
 import events
 import web
 
-# override=True so .env wins over anything already exported in your shell.
-# Without it a stale exported TWILIO_API_KEY silently shadows .env and every
-# Twilio call 401s with a confusing "Authorization Error".
+# override=True: an exported TWILIO_API_KEY would otherwise shadow .env.
 load_dotenv(override=True)
 set_tracing_disabled(True)
-
-# ---------------------------------------------------------------------------
-# TAC setup — one TAC instance, one channel per Twilio channel we use.
-# TACFastAPIServer (bottom of file) auto-wires all webhooks + the
-# ConversationRelay websocket from TWILIO_VOICE_PUBLIC_DOMAIN.
-# ---------------------------------------------------------------------------
 
 tac = TAC(config=TACConfig.from_env())
 
 voice_channel = VoiceChannel(
     tac,
     config=VoiceChannelConfig(
-        # Spoken by Twilio the moment the customer answers — before any LLM
-        # round-trip. This is our "you are talking to an AI" disclosure.
         default_twiml_options=TwiMLOptions(
+            # Spoken on answer, before any LLM round-trip: our AI disclosure.
             welcome_greeting=(
                 "Hello! This is Ava, an automated A I assistant calling from "
                 "Owl Shoes. I'm reaching out with a quick reminder to update "
                 "the payment information on your account. Is now an okay time?"
             ),
-            # Where Twilio sends the still-live call once ConversationRelay
-            # ends. TAC would default this to the Studio flow webhook
-            # (?Trigger=incomingCall), but **Studio rejects outbound-api calls
-            # with HTTP 400** — verified by replaying the webhook with only
-            # Direction changed: outbound-api -> 400, inbound -> 200. This demo
-            # dials out, so the Studio path can never work here and the caller
-            # hears "an application error has occurred" (KNOWN-ISSUES #17).
-            # Setting action_url takes precedence over studio_handoff_flow_sid
-            # in VoiceChannel._resolve_action_url, so we serve the transfer
-            # TwiML ourselves. TAC's handoff tool still does the real work:
-            # speaking the goodbye, ending the relay session, and attaching
-            # HandoffData — /handoff just gates on it and dials.
+            # Where the still-live call goes when ConversationRelay ends. TAC
+            # would default to the Studio flow webhook, but Studio rejects
+            # outbound-api calls, so we render the transfer TwiML ourselves.
+            # An explicit action_url outranks studio_handoff_flow_sid.
             action_url=f"https://{tac.config.voice_public_domain}/handoff",
         ),
     ),
 )
 
-# Used by the send_payment_link tool below. Replies to the SMS also route
-# back into handle_message_ready, on this same agent.
 sms_channel = SMSChannel(tac, config=SMSChannelConfig())
 
 
-# Prompt note: the earlier version said "if the customer agrees, thanks you, or
-# asks for the link, use send_payment_link". The greeting ends with "Is now an
-# okay time?", so the customer's first word is usually "yes" — which satisfied
-# "agrees" and fired the tool on turn one, before any conversation happened.
-# "thanks you" was just as loose; people say thanks constantly. The rule below
-# is deliberately narrow about what counts as consent to receive a text.
+# Consent wording is deliberately narrow. The greeting ends with "is now an okay
+# time?", so a looser rule ("if the customer agrees") fires the tool on the
+# caller's first "yes".
 VOICE_INSTRUCTIONS = (
     "You are Ava, an AI assistant for Owl Shoes, on an outbound phone call. "
     "The greeting already introduced you and asked whether now is a good time. "
@@ -125,9 +99,8 @@ VOICE_INSTRUCTIONS = (
     "in their account, and end the call politely without sending anything."
 )
 
-# Replies to the payment-link SMS arrive as a NEW conversation_id with empty
-# history, so they must not inherit the outbound-call prompt (it would send a
-# second link on "thanks!").
+# An SMS reply arrives on a new conversation_id with empty history, so it must
+# not inherit the outbound-call prompt.
 SMS_INSTRUCTIONS = (
     "You are Ava, an AI assistant for Owl Shoes, replying by text message to a "
     "customer who was just sent a link to update their payment information. "
@@ -138,14 +111,9 @@ SMS_INSTRUCTIONS = (
 )
 
 
-# ---------------------------------------------------------------------------
-# Custom TAC tool — this is the pattern for giving your LLM new abilities.
-# function_tool() builds the LLM-facing JSON schema from the signature +
-# docstring; InjectedToolArg params are hidden from the LLM. It's applied by
-# the factory below rather than as a decorator here, so each voice message gets
-# its own tool with its own session injected (configure_injection()).
-# Voice only: on SMS the customer already has the link (see SMS_INSTRUCTIONS).
-# ---------------------------------------------------------------------------
+# --- Tools -----------------------------------------------------------------
+# function_tool() derives the LLM-facing schema from the signature and
+# docstring; InjectedToolArg params are hidden from the LLM and supplied by us.
 
 
 async def _send_payment_link(
@@ -160,13 +128,12 @@ async def _send_payment_link(
     if not to_number:
         return "Could not determine the customer's phone number."
 
-    # "Branded/tracked" link: it points back at this server, so we log the
-    # click and stream it to the landing page before showing the payment page.
+    # Tracked link: it points back here, so the click reaches the live feed
+    # before the payment page renders.
     link_id = uuid.uuid4().hex[:8]
     web.PAYMENT_LINKS[link_id] = {"to": to_number, "clicked": False}
     link = f"https://{tac.config.voice_public_domain}/pay/{link_id}"
 
-    # Outbound SMS through TAC — same SDK, different channel.
     await sms_channel.initiate_outbound_conversation(
         InitiateMessagingConversationOptions(
             to=to_number,
@@ -182,33 +149,27 @@ async def _send_payment_link(
 
 
 def create_send_payment_link_tool(session: ConversationSession) -> TACTool:
-    """Build a fresh send_payment_link tool bound to one conversation.
+    """Build a send_payment_link tool bound to one conversation.
 
-    A factory, not a module-level tool: configure_injection() mutates the tool
-    in place and returns self, so a shared instance would leak one caller's
-    session into another's turn. This mirrors TAC's own
-    create_studio_handoff_tool, which rebuilds its tool per call too.
+    A factory rather than a module-level tool: configure_injection() mutates in
+    place and returns self, so a shared instance would leak one caller's session
+    into another's turn.
 
-    Pass name= explicitly: function_tool defaults to func.__name__, which is
-    now the underscore-prefixed _send_payment_link and would no longer match
-    the tool name in VOICE_INSTRUCTIONS.
+    name= is explicit because function_tool would otherwise use the underscored
+    function name, which no longer matches VOICE_INSTRUCTIONS.
     """
     return function_tool(name="send_payment_link")(_send_payment_link).configure_injection(
         session=session
     )
 
 
-# TAC's built-in knowledge tool needs an async factory call, so build it on
-# first use and reuse it. Passing name+description skips a metadata fetch.
+# Built once and cached; the knowledge tool takes no per-conversation session.
 #
-# Workaround for an upstream SDK bug: the search returns Pydantic
-# KnowledgeChunkResult models, but to_openai_agents_sdk_tool()'s on_invoke
-# JSON-encodes results with a bare json.dumps() — which raises TypeError, and
-# the voice channel only logs it, so the caller hears dead air. So we keep the
-# SDK tool for the search itself and wrap it in a tool that returns plain
-# dicts. Reusing search.params_json_schema keeps the LLM-facing parameter
-# exactly `query` (the injected client/kb-id/top_k are already filtered out).
-# Delete the wrapper once on_invoke handles Pydantic upstream.
+# The wrapper works around an upstream SDK bug: search returns Pydantic models,
+# but to_openai_agents_sdk_tool()'s on_invoke encodes results with a bare
+# json.dumps(), raising TypeError that the voice channel only logs — the caller
+# hears dead air. Reusing search.params_json_schema keeps the LLM-facing
+# parameter exactly `query`. Remove once on_invoke handles Pydantic.
 _knowledge_tool: TACTool | None = None
 
 
@@ -239,12 +200,14 @@ async def get_knowledge_tool() -> TACTool | None:
     return _knowledge_tool
 
 
-# TAC's built-in Studio handoff tool needs TWILIO_STUDIO_HANDOFF_FLOW_SID plus
-# Conversation Orchestrator and a memory store; it raises ValueError otherwise.
-# The voice channel only logs exceptions from this callback, so an unguarded
-# call means dead air on EVERY utterance. Degrade to "no handoff tool" instead
-# so the SMS + FAQ parts of the demo still work with a partial .env.
 def get_handoff_tool(context: ConversationSession) -> TACTool | None:
+    """Build the handoff tool, or None if handoff isn't configured.
+
+    create_studio_handoff_tool raises without a flow SID, Conversation
+    Orchestrator and a memory store. The voice channel only logs exceptions from
+    the message callback, so letting it raise means dead air on every utterance;
+    degrading to "no handoff tool" keeps the rest of the demo working.
+    """
     if not tac.config.studio_handoff_flow_sid:
         return None
     try:
@@ -258,15 +221,14 @@ def get_handoff_tool(context: ConversationSession) -> TACTool | None:
                 "customer asks for a person or you cannot resolve their issue."
             ),
         )
-    except ValueError as exc:  # orchestrator or memory store not configured
+    except ValueError as exc:
         print(f"Human handoff disabled: {exc}")
         return None
 
 
-# ---------------------------------------------------------------------------
-# The LLM loop. TAC calls this with each transcribed caller utterance (voice)
-# or inbound SMS body; whatever string we return is spoken/texted back.
-# ---------------------------------------------------------------------------
+# --- LLM loop --------------------------------------------------------------
+# TAC calls this with each transcribed utterance (voice) or inbound SMS body;
+# the string we return is spoken or texted back.
 
 conversation_history: dict[str, list[Any]] = {}
 
@@ -274,27 +236,19 @@ conversation_history: dict[str, list[Any]] = {}
 async def handle_message_ready(
     user_message: str,
     context: ConversationSession,
-    # _memory_response is always None here: both channels use the default
-    # memory_mode="never", and the conversation_history dict below is what
-    # actually carries context. To use TAC memory instead, set
-    # memory_mode="always" on the channel configs and compose the prompt with
-    # tac.adapters.prompt_builder.MemoryPromptBuilder.build(...) — that also
-    # gives SMS replies cross-channel context (see issue #5).
+    # Always None: both channels use the default memory_mode="never", and
+    # conversation_history carries context instead. To use TAC memory, set
+    # memory_mode="always" and compose the prompt with MemoryPromptBuilder.
     _memory_response: TACMemoryResponse | None,
 ) -> str:
     events.publish("caller_said", f"Customer: {user_message}")
 
-    # context.channel is "VOICE" or "SMS" — the prompt and the tool set both
-    # depend on it. The session-bound tools are built fresh for this message so
-    # they carry this conversation's session; the knowledge tool takes no
-    # session, so it stays cached.
     on_voice = context.channel == "VOICE"
 
     tools: list[Any] = []
     if on_voice:
-        # Voice only. The customer already has the link if they're replying by
-        # SMS, and studio-flow.json has no incomingMessage path, so a digital
-        # handoff would POST a Studio execution that dead-ends.
+        # Voice only: an SMS replier already has the link, and handoff has no
+        # messaging path.
         tools.append(create_send_payment_link_tool(context).to_openai_agents_sdk_tool())
         handoff_tool = get_handoff_tool(context)
         if handoff_tool:
@@ -313,15 +267,11 @@ async def handle_message_ready(
     result = await Runner.run(agent, history + [{"role": "user", "content": user_message}])
     conversation_history[context.conversation_id] = result.to_input_list()
 
-    # Surface tool calls on the landing page feed.
     for item in result.new_items:
         if item.type == "tool_call_item":
             tool_name = getattr(item.raw_item, "name", "tool")
             events.publish("tool", f"Agent used tool: {tool_name}")
             if tool_name == "connect_to_human_agent":
-                # TAC ends the ConversationRelay session after this reply is
-                # spoken; Twilio then hands the live call to the Studio flow,
-                # which dials the "browser-agent" client — your browser rings.
                 events.publish("handoff", "Transferring to a human — your browser will ring!")
 
     reply = result.final_output_as(str)
@@ -332,8 +282,7 @@ async def handle_message_ready(
 tac.on_message_ready(handle_message_ready)
 
 
-# Call lifecycle webhooks (ringing / answered / completed) -> SSE feed.
-# Registering the handler is what makes TAC attach the status callback URL
+# Registering this handler is also what makes TAC attach the status callback URL
 # to the outbound call.
 async def on_call_status(event: CallStatusEvent) -> None:
     events.publish("call_status", f"Call {event.call_status}", call_sid=event.call_sid)
@@ -342,13 +291,8 @@ async def on_call_status(event: CallStatusEvent) -> None:
 voice_channel.on_call_status(on_call_status)
 
 
-# ---------------------------------------------------------------------------
-# Placing the outbound call — triggered by the landing page's "Call me" button
-# (POST /api/call in web.py).
-# ---------------------------------------------------------------------------
-
-
 async def start_reminder_call(to_number: str) -> str:
+    """Place the reminder call. Triggered by POST /api/call."""
     result = await voice_channel.initiate_outbound_conversation(
         InitiateVoiceConversationOptions(
             to=to_number,
@@ -363,37 +307,24 @@ async def start_reminder_call(to_number: str) -> str:
     return result.call_sid
 
 
-# ---------------------------------------------------------------------------
-# Server — TACFastAPIServer registers TAC's webhook + websocket routes on our
-# FastAPI app; web.py adds the landing page, SSE stream, browser-softphone
-# token, and the tracked /pay/<id> link.
-# ---------------------------------------------------------------------------
+# --- Server ----------------------------------------------------------------
 
 app = FastAPI(title="TAC Payment Reminder Demo")
 app.include_router(web.create_router(start_reminder_call, tac.config))
 
 
 class TrustProxyHTTPS:
-    """Force ``X-Forwarded-Proto: https`` on incoming HTTP and WebSocket scopes.
+    """Force ``X-Forwarded-Proto: https`` on HTTP and WebSocket scopes.
 
-    Twilio signs the full request URL, and TAC validates that signature on
-    /twiml, the relay action callback, the call-event callbacks and the /ws
-    upgrade. TAC rebuilds the URL from ``X-Forwarded-Proto`` (see
-    tac/server/signature_validation.py ``_build_url``), preferring that header
-    over the ASGI scheme.
+    Twilio signs the full request URL and TAC validates that signature using
+    ``X-Forwarded-Proto``, preferring it over the ASGI scheme. A proxy that
+    terminates TLS and forwards plain HTTP sends ``http``, so validation runs
+    against the wrong URL and every Twilio callback 403s.
 
-    Some proxy chains terminate TLS and then forward over plain HTTP, arriving
-    with ``X-Forwarded-Proto: http``. TAC then validates against
-    ``http://your-domain/...`` while Twilio signed ``https://...``, and every
-    callback 403s. Observed on the twl dev box, where Caddy terminates TLS and
-    Traefik overwrites the header: four consecutive
-    ``POST /twilio/call-events/status -> 403 Forbidden``.
-
-    Enable with ``TRUST_PROXY_HTTPS=1`` when the app sits behind a TLS-
-    terminating proxy. Not needed under ngrok, which forwards the header
-    correctly. Pure ASGI rather than a FastAPI ``@app.middleware("http")``
-    because that flavor never sees ``websocket`` scopes — and the
-    ConversationRelay socket needs this just as much as the webhooks.
+    Enable with ``TRUST_PROXY_HTTPS=1`` behind such a proxy; leave it unset
+    under ngrok, which forwards the header correctly. Pure ASGI because
+    ``@app.middleware("http")`` never sees ``websocket`` scopes, and the
+    ConversationRelay socket is validated the same way.
     """
 
     def __init__(self, app: Any) -> None:
@@ -410,14 +341,9 @@ class TrustProxyHTTPS:
 if os.getenv("TRUST_PROXY_HTTPS") == "1":
     app.add_middleware(TrustProxyHTTPS)
 
-# TACFastAPIServer registers TAC's webhook + websocket routes in its
-# constructor, so it must run at import time — `uvicorn app:app --reload`
-# never executes the __main__ block and would serve the landing page with no
-# /twiml route or ConversationRelay websocket. Constructing it here also means
-# a missing TWILIO_VOICE_PUBLIC_DOMAIN fails fast at import instead of on the
-# first inbound call. start() (uvicorn, using TWILIO_SERVER_HOST/PORT) stays
-# under the guard; under `uvicorn app:app` host/port come from uvicorn's own
-# CLI instead.
+# Constructed at import, not under __main__: the constructor is what registers
+# TAC's webhook and websocket routes, so `uvicorn app:app` would otherwise serve
+# the landing page with no /twiml and no ConversationRelay socket.
 server = TACFastAPIServer(
     tac=tac,
     voice_channel=voice_channel,
