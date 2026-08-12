@@ -1,6 +1,6 @@
 # Handoff — TAC Payment Reminder Demo
 
-Last updated 2026-08-10.
+Last updated 2026-08-12.
 
 A teaching demo of the [Twilio Agent Connect (TAC) Python SDK](https://github.com/twilio/twilio-agent-connect-python)
 for hackathon teams: an AI agent phones a customer about updating their payment
@@ -30,6 +30,26 @@ KNOWN-ISSUES #13 has the specifics and the two traps.
 **Check SMS delivery in the Messages log, not the live feed.** The feed publishes
 `sms_sent` when TAC accepts the message, which is before Twilio decides to reject
 it; all three 30034 failures looked like successes on the dashboard.
+
+## Where it runs
+
+| Target | State |
+|---|---|
+| Local + ngrok | `.env` `TWILIO_VOICE_PUBLIC_DOMAIN` points at an `*.ngrok-free.app` host. Verified through the tunnel: signed webhook → 200, signed `wss://` → 101, forged → 403. Run with `uv run python app.py` in its own tab; ngrok needs another |
+| `twl` dev box | `https://gd-poc.twl.dtolb.com` — still live. Reads its own env via `twl env set`, so local `.env` edits don't touch it |
+
+**ngrok works here only on a temporary IT bypass** (granted 2026-08-12) that can be
+revoked without notice. If it starts failing with an x509 error, suspect the bypass
+lapsed before debugging anything else — `zscaler_issues.md` has the detail. The twl
+deploy stays the durable path and the one a colleague can reproduce.
+
+A new ngrok URL needs an `.env` edit **and** a restart: `action_url` is built at
+import time.
+
+**Public walkthrough page:** `https://pages-4296.twil.io/tac-payment-reminder-walkthrough`
+— flow-chart explainer for sharing outside the team. Source lives in `../pages/`,
+published with the `theme-create-and-host-html` skill. Fully public, and scrubbed:
+no SIDs, numbers, or internal hostnames.
 
 ## Architecture
 
@@ -108,11 +128,20 @@ workaround in `app.py` breaks.
 
 ## Open items
 
-1. **Two upstream bug reports, drafted but not filed** — in `KNOWN-ISSUES.md`
+1. **Conversation Intelligence — designed, approved, not built.** Spec is
+   `docs/2026-08-12-conversation-intelligence-design.md` (uncommitted). Live
+   sentiment over the existing SSE feed; the call summary is deliberately deferred.
+   Two things that section records and you should not rediscover: the demo's
+   Orchestrator config has **no `statusTimeouts`**, so its conversation has been
+   `ACTIVE` since Aug 10 and `CONVERSATION_END` can never fire; and sentiment
+   accumulates across a whole conversation, so per-call scoping is a prerequisite,
+   not a nicety. The plan **clones** the conversation configuration rather than
+   editing the live one. No implementation plan exists yet.
+2. **Two upstream bug reports, drafted but not filed** — in `KNOWN-ISSUES.md`
    #1 (Pydantic serialization in `to_openai_agents_sdk_tool()`) and #17 (Studio
    handoff unusable on outbound calls). Both are worth sending to
    `twilio/twilio-agent-connect-python`.
-2. **Brand consistency** — the demo is themed "Owl Shoes" throughout (prompt,
+3. **Brand consistency** — the demo is themed "Owl Shoes" throughout (prompt,
    greeting, FAQ, payment page). Rebranding means changing all of them together.
 
 ## Conventions
