@@ -6,14 +6,14 @@ SDK source; 11–18 came from provisioning, deploying, and calling a real phone.
 
 | | Issues |
 |---|---|
-| ⛔ Open — blocks a demo path | #13 (SMS) |
 | 📤 Open — upstream reports drafted, not filed | #1, #17 |
 | ℹ️ Won't fix — documented workaround | #14 |
-| ✅ Fixed | #2–#12, #15, #16, #18 |
+| ✅ Fixed | #2–#13, #15, #16, #18 |
 
 **"Fixed" means reviewed and exercised**, not formally tested — there are no
-automated tests. The outbound call, AI conversation, FAQ lookup and human handoff
-have all run on a real call. The SMS leg never has (#13).
+automated tests. Every demo path has now run against live Twilio: the outbound
+call, the AI conversation, the FAQ lookup, the human handoff, and the SMS payment
+link (#13, delivered 2026-08-12).
 
 Judged against this project's bar: teaching/sample code, not production.
 Production concerns (auth, persistence, multi-user, retries) are intentionally out
@@ -22,24 +22,6 @@ of scope.
 ---
 
 ## Open
-
-### 13. US SMS is blocked until A2P 10DLC is approved
-The sending number sits in a Messaging Service whose campaign is still pending.
-Until it verifies, Twilio **rejects** US-bound SMS with error **30034 ("Message
-from an Unregistered Number")** — it fails hard, not silently, so the "text me the
-link" leg of the demo cannot work. Check campaign status before demoing.
-
-No code change is needed for the Messaging Service. TAC always sends
-`From: config.phone_number` and has no messaging-service parameter on the outbound
-path (`InitiateMessagingConversationOptions` exposes only `to`, `message`,
-`metadata`). That's fine: A2P registration binds to the **number** via the
-service's sender pool, not to the API parameter you send with. One number in the
-pool is also the right shape — with several you can't choose which gets registered.
-
-If approval hasn't landed by demo time, the documented pre-registration path is a
-sender type outside A2P 10DLC. A **toll-free** number (with TF verification) is the
-realistic swap, and it's a one-line `.env` change since TAC only reads
-`TWILIO_PHONE_NUMBER`.
 
 ### 1. Knowledge tool results aren't JSON-serializable
 **Upstream SDK bug. Worked around here; report drafted below, not filed.**
@@ -144,6 +126,40 @@ to agree with it.
 ---
 
 ## Fixed — with lessons worth keeping
+
+### 13. US SMS needed an approved A2P 10DLC campaign
+**Fixed 2026-08-12 and verified by a delivered message.**
+
+The number sat in Messaging Service `MGe7c29…` (GD-Hackathon), whose campaign was
+stuck `IN_PROGRESS` with `campaign_id=None`. Twilio **rejects** US-bound SMS from
+an unregistered number with error **30034** — it fails hard, not silently, so the
+"text me the link" leg simply never worked.
+
+The account already had a second service, `MG2646…` (Dtolb-Test), on the **same
+brand** `BN95cbd…` with a **VERIFIED** LOW_VOLUME campaign (`campaign_id=CIZLL0D`).
+The fix was to move the number into that pool. Two traps:
+
+- A number belongs to **one** Messaging Service, so remove before adding —
+  add-first returns error **21712**.
+- Registration binds to the **number** via the sender pool, not to an API
+  parameter, so nothing in code changes. TAC always sends
+  `From: config.phone_number` and has no messaging-service parameter on the
+  outbound path (`InitiateMessagingConversationOptions` exposes only `to`,
+  `message`, `metadata`).
+
+Evidence — identical code and number, only the campaign association differed:
+
+| When | Result |
+|---|---|
+| Aug 10 23:20, 23:23; Aug 11 01:00 | `undelivered`, **30034** |
+| Aug 12 15:12 (`SMd07cc182…`) | **`delivered`**, `error_code=None` |
+
+GD-Hackathon is now an empty, unused service, and the Dtolb-Test pool holds two
+numbers. Reverse by moving the number back.
+
+Had approval never landed, the documented escape hatch was a sender type outside
+A2P 10DLC — a **toll-free** number with TF verification, a one-line `.env` change
+since TAC only reads `TWILIO_PHONE_NUMBER`.
 
 ### 11. Knowledge retrieval: two chunking traps
 We briefly pointed the knowledge base at a vendor help-center URL as a **Web**

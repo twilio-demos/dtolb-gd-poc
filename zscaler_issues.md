@@ -4,6 +4,18 @@ Notes from 2026-08-10. Relevant if you're on a managed laptop running Zscaler (o
 any TLS-intercepting proxy) and ngrok won't connect. **If you deploy to a hosted
 URL instead, none of this applies** — see the README's public-domain options.
 
+## Status: temporarily bypassed, not fixed (2026-08-12)
+
+IT granted a **temporary** proxy bypass on this machine, so `ngrok http 8000`
+now connects and the demo runs locally against an `*.ngrok-free.app` domain.
+Nothing below was solved — the bypass sidesteps it.
+
+Treat this as borrowed. The grant can be revoked without notice, and it does not
+transfer to any other machine or to a colleague following the README. The `twl`
+dev box stays the durable public path; keep it working. If ngrok starts failing
+again with the x509 error below, assume the bypass lapsed before you debug
+anything else.
+
 ## Symptom
 
 `ngrok http 8000` never establishes a tunnel and retries forever:

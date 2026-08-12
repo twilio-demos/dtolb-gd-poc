@@ -62,11 +62,16 @@ that has already happened once:
 | `docs/2026-08-10-tac-payment-reminder-design.md` | Approved design + decisions |
 | `README.md` | Setup walkthrough (provisioning, both public-domain options) |
 
-## Current state (2026-08-10)
+## Current state (2026-08-12)
 
 **Deployed and live:** `https://gd-poc.twl.dtolb.com` (twl dev box). Landing
 page, `/token`, the TAC webhook routes and the ConversationRelay websocket are
 all verified working through the proxy with real Twilio signatures.
+
+**Also runs locally** against an ngrok domain in `.env`, verified the same way
+(signed webhook → 200, signed `wss://` → 101, forged → 403). Both can run at
+once, but keep only **one landing page** open — #14. See the ngrok gotcha below;
+that path rests on a revocable IT bypass.
 
 **Provisioned on Twilio** (IDs live in `.env`, which is gitignored): memory
 store, conversation configuration, Enterprise Knowledge base (Owl Shoes FAQ,
@@ -74,27 +79,28 @@ verified 7/7 on the demo's questions), Studio handoff flow, and phone number
 `+1XXXXXXXXXX` in Messaging Service `MG…(your Messaging Service)`. The
 Studio flow exists but is no longer invoked (#17).
 
-**Read `KNOWN-ISSUES.md` before changing code.** #1–#12 and #15–#18 are fixed.
-Two items remain open, neither of them code:
+**Read `KNOWN-ISSUES.md` before changing code.** #1–#13 and #15–#18 are fixed.
+One item remains, and it isn't code:
 
-- **#13** — the A2P 10DLC campaign is `IN_PROGRESS`, so US SMS from the demo
-  number is **blocked** with error 30034. The SMS leg cannot work until it
-  verifies. Nothing to code.
 - **#1 / #17 upstream** — bug reports for `twilio-agent-connect-python` are
   drafted (serialization in #1; Studio handoff being unusable on outbound calls
   in #17) but **not filed**. Filing is public; ask first.
 
-**Verified on a real call:** the outbound call, the LLM turns, the knowledge
-tool, and the human handoff to the browser softphone all work end to end.
+**Verified end to end on real traffic:** the outbound call, the LLM turns, the
+knowledge tool, the human handoff to the browser softphone, and — as of
+2026-08-12 — the **SMS payment link, delivered** (#13). Every leg of the demo has
+now run against live Twilio.
 
 ## Verification bar
 
 - Done: `uv sync`, import smoke tests, SDK symbol checks, `py_compile`, a real
   containerized deploy, live signature verification (signed `https://` webhook →
-  200, signed `wss://` upgrade → 101, forged signature → 403), and **a real
-  end-to-end call including the human handoff**.
-- The SMS leg is the one path **never exercised** — it is blocked by #13 until
-  the 10DLC campaign verifies. Don't claim it works.
+  200, signed `wss://` upgrade → 101, forged signature → 403), **a real
+  end-to-end call including the human handoff**, and **a delivered SMS** (#13).
+- No leg of the demo is unexercised any more. Check delivery in the Messages log
+  rather than trusting the live feed — the feed publishes `sms_sent` when TAC
+  accepts the message, which is *before* Twilio decides to reject it. All three
+  30034 failures in #13 looked like successes on the dashboard.
 - Do **not** place test calls or send test SMS without asking — both cost money
   and ring a real phone.
 
@@ -105,8 +111,11 @@ tool, and the human handoff to the browser softphone all work end to end.
   makes every Twilio call 401 with a confusing authorization error.
 - **`.gitignore` has `.env.*`** so timestamped credential backups can't be
   committed. Keep `!.env.example`.
-- **ngrok does not work on this machine** — corporate TLS interception. See
-  `zscaler_issues.md`. The twl deploy is the working public path.
+- **ngrok works here only on a temporary IT bypass** (granted 2026-08-12).
+  Corporate TLS interception otherwise breaks it, and the grant can be revoked
+  without notice — if ngrok starts failing with an x509 error, suspect that
+  first. See `zscaler_issues.md`. The twl deploy remains the durable public path
+  and the one a colleague can reproduce; don't let it rot.
 - **After `twl deploy`, every route 404s then 502s for ~10-25s** while the proxy
   re-registers, even though the app logs a clean startup. Poll `GET /` for 200.
 - `timeout` is not a stock macOS binary; use `curl -m N`.

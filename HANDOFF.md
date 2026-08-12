@@ -18,13 +18,18 @@ where the project stands, what works, and what will bite you.
 | Outbound call + AI conversation | ✅ Working, verified on real calls |
 | Renewal FAQ (Enterprise Knowledge) | ✅ Working, 7/7 on the demo's questions |
 | Human handoff → browser softphone | ✅ Working, verified end to end |
-| Payment link by SMS | ⛔ **Blocked** — A2P 10DLC campaign not yet approved |
+| Payment link by SMS | ✅ Working, one delivered message (2026-08-12) |
 | Landing page + live SSE feed | ✅ Working |
 
-The SMS leg is the only unproven path. Until the 10DLC campaign is verified,
-Twilio rejects US-bound SMS from the sender with error **30034 ("Message from an
-Unregistered Number")** — it fails hard, not silently. Everything else has run on
-a real phone call.
+Every leg has now run against live Twilio. The SMS leg was the last holdout: the
+sending number sat in a Messaging Service whose 10DLC campaign never verified, so
+Twilio rejected US-bound SMS with **30034 ("Message from an Unregistered
+Number")**. Moving the number into an already-approved campaign fixed it —
+KNOWN-ISSUES #13 has the specifics and the two traps.
+
+**Check SMS delivery in the Messages log, not the live feed.** The feed publishes
+`sms_sent` when TAC accepts the message, which is before Twilio decides to reject
+it; all three 30034 failures looked like successes on the dashboard.
 
 ## Architecture
 
@@ -103,13 +108,11 @@ workaround in `app.py` breaks.
 
 ## Open items
 
-1. **A2P 10DLC campaign approval** — blocks the SMS leg. Check the campaign
-   status before demoing; nothing to code.
-2. **Two upstream bug reports, drafted but not filed** — in `KNOWN-ISSUES.md`
+1. **Two upstream bug reports, drafted but not filed** — in `KNOWN-ISSUES.md`
    #1 (Pydantic serialization in `to_openai_agents_sdk_tool()`) and #17 (Studio
    handoff unusable on outbound calls). Both are worth sending to
    `twilio/twilio-agent-connect-python`.
-3. **Brand consistency** — the demo is themed "Owl Shoes" throughout (prompt,
+2. **Brand consistency** — the demo is themed "Owl Shoes" throughout (prompt,
    greeting, FAQ, payment page). Rebranding means changing all of them together.
 
 ## Conventions
