@@ -642,8 +642,12 @@ Then delete the leftover comment line in `pyproject.toml`:
 
 - [ ] **Step 7: Verify the TAC pin again, then compile and import**
 
+The pin is a `#<sha>` fragment on the `source = { git = … }` line, not a
+`revision =` key — grepping for the package name misses it. Use:
+
 ```bash
-grep -n -A2 'name = "twilio-agent-connect"' uv.lock | head -10
+grep -n 'twilio-agent-connect-python.git#' uv.lock
+git diff main -- uv.lock | grep -E '^[+-].*twilio-agent-connect-python\.git' || echo "TAC pin unchanged vs main"
 uv sync
 uv run python -m py_compile app.py llm.py web.py events.py && echo compiled
 uv run python -c "import app; print('ok')"
