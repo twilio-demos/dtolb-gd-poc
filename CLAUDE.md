@@ -62,6 +62,7 @@ hypothetical.
 | `Dockerfile`, `.dockerignore` | twl deploy (linux/arm64, one `EXPOSE 8000`) |
 | `HANDOFF.md` | Status, architecture, and the traps — the doc to hand a new person |
 | `KNOWN-ISSUES.md` | 19 findings, current status per issue |
+| `docs/COMPLEXITY-NOTES.md` | To-do list: functions whose docstring outgrew one sentence for non-vendor reasons |
 | `zscaler_issues.md` | ngrok vs. corporate TLS interception; partial workaround |
 | `docs/2026-08-10-tac-payment-reminder-design.md` | Approved design + decisions |
 | `README.md` | Setup walkthrough (provisioning, Vertex/ADC, ngrok; the twl box flagged as author-only) |
