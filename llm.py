@@ -9,25 +9,9 @@ applies the tool's injected arguments. Everything else here is the turn loop.
 Knows nothing about Twilio on purpose — run_turn takes an on_tool_call callback
 so the caller publishes its own events.
 
-Vertex, Gemini and TAC behavior the turn loop is shaped around:
-
-- Vertex rejects an OBJECT schema whose properties are empty, so a tool whose every
-  parameter is injected must declare no parameters at all rather than an empty set.
-- TAC's knowledge tool returns Pydantic models, which Gemini cannot serialize, so
-  tool results are flattened with model_dump() on the way back.
-- Tool results go back with role="user", matching the Gemini SDK's own
-  automatic-function-calling path.
-- Thinking is off: 2.5 Flash reasons before answering by default, which is dead air
-  on a phone call.
-- Exceptions are caught and answered as text, because TAC's voice channel only logs
-  exceptions raised from the message callback — raising is silence on a live call.
-- The client is built lazily: app.py calls load_dotenv() after its import block, so
-  reading the env at import time here would read it before .env is loaded.
-
-Known quirk, not a vendor one: both of run_turn's failure exits return the *pre-turn*
-history, because contents would otherwise end on a tool response with no model answer.
-That drops any tool round that already ran — a sent SMS can leave no record, so
-VOICE_INSTRUCTIONS' "at most once per call" has nothing to act on.
+Why bits of this look the way they do: KNOWN-ISSUES.md, "SDK behavior the code is
+shaped around". run_turn's history handling has a known wart — see
+docs/COMPLEXITY-NOTES.md.
 """
 
 import os

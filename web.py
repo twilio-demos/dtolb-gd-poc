@@ -13,17 +13,8 @@ only serve the demo UI and glue:
   GET  /pay/{id}    the tracked link from the SMS — logs the click, pushes it
                     to the live feed, shows a fake payment page
 
-Twilio behavior these routes are shaped around, plus the one guard that is not
-about Twilio at all:
-
-- POST /api/call has no auth and every call it places is real and billed, so
-  DEMO_ALLOWED_NUMBERS caps who a public deployment can dial.
-- Twilio requests the ConversationRelay action_url whenever a session ends, not only
-  on a handoff, so /handoff dials the browser only when the POST carries HandoffData;
-  otherwise a dropped websocket would ring the softphone unprompted. Its callerId
-  must be a number this account owns.
-- incoming_allow on the Voice grant is what lets /handoff's <Dial><Client> ring the
-  page at all.
+Why bits of this look the way they do: KNOWN-ISSUES.md, "SDK behavior the code is
+shaped around".
 """
 
 import os

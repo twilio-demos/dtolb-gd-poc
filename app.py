@@ -13,26 +13,8 @@ whole call live over SSE.
 
 Run:  uv run python app.py   (see README for the one-time Twilio setup)
 
-TAC and Twilio behavior this file is shaped around, which the code cannot say:
-
-- Studio answers 400 for Direction=outbound-api, so TAC's built-in Studio handoff
-  cannot serve an outbound call. An explicit default_twiml_options.action_url
-  outranks studio_handoff_flow_sid, so ConversationRelay exits to /handoff, which
-  renders the transfer TwiML itself.
-- A tool is built per conversation because configure_injection() mutates the tool in
-  place and returns self; one shared instance would leak a session into the next
-  caller's turn. The knowledge tool takes no session, so it is built once and shared.
-- create_studio_handoff_tool wants a Studio flow SID, Conversation Orchestrator and a
-  memory store, and raises without them. handoff_tool_for returns None instead of
-  raising, because the voice channel only *logs* exceptions from the message
-  callback — a raise there is dead air on every utterance.
-- The payment link and the handoff are voice-only: an SMS replier already has the
-  link, and Studio handoff has no messaging path.
-- on_message_ready serves both channels, and its memory_response is always None while
-  both use the default memory_mode="never" — conversation_history carries the thread.
-- Registering on_call_status is the side effect that makes TAC attach the status
-  callback URL to the outbound call, and Twilio then reports only "completed" unless
-  status_callback_event lists the earlier states out.
+Why bits of this look the way they do: KNOWN-ISSUES.md, "SDK behavior the code is
+shaped around".
 """
 
 import os
