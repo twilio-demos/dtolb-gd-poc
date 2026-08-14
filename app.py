@@ -50,16 +50,15 @@ voice_channel = VoiceChannel(
     tac,
     config=VoiceChannelConfig(
         default_twiml_options=TwiMLOptions(
-            # Spoken on answer, before any LLM round-trip: our AI disclosure.
             welcome_greeting=(
                 "Hello! This is Ava, an automated A I assistant calling from "
                 "Owl Shoes. I'm reaching out with a quick reminder to update "
                 "the payment information on your account. Is now an okay time?"
             ),
-            # Where the still-live call goes when ConversationRelay ends. TAC
-            # would default to the Studio flow webhook, but Studio rejects
-            # outbound-api calls, so we render the transfer TwiML ourselves.
-            # An explicit action_url outranks studio_handoff_flow_sid.
+            # Where the still-live call goes when ConversationRelay ends. Studio
+            # answers 400 for Direction=outbound-api, so TAC's built-in Studio
+            # handoff cannot serve this call; an explicit action_url outranks
+            # studio_handoff_flow_sid and /handoff renders the transfer TwiML.
             action_url=f"https://{tac.config.voice_public_domain}/handoff",
         ),
     ),
@@ -110,11 +109,6 @@ SMS_INSTRUCTIONS = (
 )
 
 
-# --- Tools -----------------------------------------------------------------
-# function_tool() derives the LLM-facing schema from the signature and
-# docstring; InjectedToolArg params are hidden from the LLM and supplied by us.
-
-
 async def _send_payment_link(
     session: Annotated[ConversationSession, InjectedToolArg],
 ) -> str:
@@ -127,8 +121,6 @@ async def _send_payment_link(
     if not to_number:
         return "Could not determine the customer's phone number."
 
-    # Tracked link: it points back here, so the click reaches the live feed
-    # before the payment page renders.
     link_id = uuid.uuid4().hex[:8]
     web.PAYMENT_LINKS[link_id] = {"to": to_number, "clicked": False}
     link = f"https://{tac.config.voice_public_domain}/pay/{link_id}"
@@ -154,19 +146,21 @@ def create_send_payment_link_tool(session: ConversationSession) -> TACTool:
     place and returns self, so a shared instance would leak one caller's session
     into another's turn.
 
-    name= is explicit because function_tool would otherwise use the underscored
-    function name, which no longer matches VOICE_INSTRUCTIONS.
+    function_tool() derives the model-facing schema from the wrapped function's
+    signature and docstring and hides InjectedToolArg parameters from the model;
+    name= is explicit because it would otherwise expose the underscored function
+    name, which no longer matches VOICE_INSTRUCTIONS.
     """
     return function_tool(name="send_payment_link")(_send_payment_link).configure_injection(
         session=session
     )
 
 
-# Built once and cached; the knowledge tool takes no per-conversation session.
 _knowledge_tool: TACTool | None = None
 
 
 async def get_knowledge_tool() -> TACTool | None:
+    """Build the knowledge tool once; it takes no per-conversation session."""
     global _knowledge_tool
     if _knowledge_tool is None and tac.knowledge_client and tac.config.knowledge_base_id:
         _knowledge_tool = await create_knowledge_tool(
@@ -208,29 +202,28 @@ def get_handoff_tool(context: ConversationSession) -> TACTool | None:
         return None
 
 
-# --- LLM loop --------------------------------------------------------------
-# TAC calls this with each transcribed utterance (voice) or inbound SMS body;
-# the string we return is spoken or texted back. llm.py holds the Gemini side.
-
 conversation_history: dict[str, llm.History] = {}
 
 
 async def handle_message_ready(
     user_message: str,
     context: ConversationSession,
-    # Always None: both channels use the default memory_mode="never", and
-    # conversation_history carries context instead. To use TAC memory, set
-    # memory_mode="always" and compose the prompt with MemoryPromptBuilder.
     _memory_response: TACMemoryResponse | None,
 ) -> str:
+    """Run one LLM turn; the returned string is spoken or texted back.
+
+    TAC calls this with each transcribed utterance (voice) or inbound SMS body.
+    _memory_response is always None because both channels use the default
+    memory_mode="never", so conversation_history carries context instead.
+    The payment link and handoff are voice-only: an SMS replier already has the
+    link, and Studio handoff has no messaging path.
+    """
     events.publish("caller_said", f"Customer: {user_message}")
 
     on_voice = context.channel == "VOICE"
 
     tools: list[TACTool] = []
     if on_voice:
-        # Voice only: an SMS replier already has the link, and handoff has no
-        # messaging path.
         tools.append(create_send_payment_link_tool(context))
         handoff_tool = get_handoff_tool(context)
         if handoff_tool:
@@ -260,9 +253,12 @@ async def handle_message_ready(
 tac.on_message_ready(handle_message_ready)
 
 
-# Registering this handler is also what makes TAC attach the status callback URL
-# to the outbound call.
 async def on_call_status(event: CallStatusEvent) -> None:
+    """Publish each call-status webhook to the live feed.
+
+    Registering this handler is also what makes TAC attach the status callback
+    URL to the outbound call.
+    """
     events.publish("call_status", f"Call {event.call_status}", call_sid=event.call_sid)
 
 
@@ -270,12 +266,15 @@ voice_channel.on_call_status(on_call_status)
 
 
 async def start_reminder_call(to_number: str) -> str:
-    """Place the reminder call. Triggered by POST /api/call."""
+    """Place the reminder call, triggered by POST /api/call.
+
+    status_callback_event is listed out because Twilio otherwise reports only
+    "completed".
+    """
     result = await voice_channel.initiate_outbound_conversation(
         InitiateVoiceConversationOptions(
             to=to_number,
             call_options=CallOptions(
-                # Without this Twilio only reports "completed".
                 status_callback_event=["initiated", "ringing", "answered", "completed"],
                 timeout=30,
             ),
@@ -284,8 +283,6 @@ async def start_reminder_call(to_number: str) -> str:
     events.publish("call_status", f"Placing call to {to_number}", call_sid=result.call_sid)
     return result.call_sid
 
-
-# --- Server ----------------------------------------------------------------
 
 app = FastAPI(title="TAC Payment Reminder Demo")
 app.include_router(web.create_router(start_reminder_call, tac.config))

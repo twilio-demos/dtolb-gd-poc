@@ -33,7 +33,7 @@ STATIC_DIR = Path(__file__).parent / "static"
 # The Twilio Client identity the landing page registers as, and /handoff dials.
 BROWSER_AGENT_IDENTITY = "browser-agent"
 
-# link_id -> {"to": phone, "clicked": bool}; filled in by app.send_payment_link.
+# link_id -> {"to": phone, "clicked": bool}
 PAYMENT_LINKS: dict[str, dict[str, Any]] = {}
 
 
@@ -53,9 +53,12 @@ def create_router(
 
     @router.post("/api/call")
     async def trigger_call(body: CallRequest) -> dict[str, str]:
-        # This route places a real billed call to any number it is given and has
-        # no auth. DEMO_ALLOWED_NUMBERS (comma-separated E.164, exact match)
-        # caps that on a public deployment; unset means any number.
+        """Place the reminder call to the number the page submitted.
+
+        The route has no auth and every call is real and billed, so
+        DEMO_ALLOWED_NUMBERS (comma-separated E.164, exact match) caps who can be
+        dialed on a public deployment; unset means any number.
+        """
         allowed = [n.strip() for n in os.getenv("DEMO_ALLOWED_NUMBERS", "").split(",") if n.strip()]
         if allowed and body.phone.strip() not in allowed:
             raise HTTPException(403, "Number not in DEMO_ALLOWED_NUMBERS.")
@@ -69,7 +72,10 @@ def create_router(
 
     @router.get("/token")
     async def voice_token() -> dict[str, str]:
-        # incoming_allow is what lets /handoff's <Dial><Client> ring this page.
+        """Mint the Voice JS access token the landing page registers with.
+
+        incoming_allow is what lets /handoff's <Dial><Client> ring the page.
+        """
         token = AccessToken(
             tac_config.account_sid,
             tac_config.api_key,
@@ -90,12 +96,12 @@ def create_router(
         app.py points default_twiml_options.action_url here. Twilio requests it
         whenever a ConversationRelay session ends, not only on a handoff, so we
         dial only when HandoffData is present — otherwise a dropped websocket
-        would ring the browser unprompted.
+        would ring the browser unprompted. callerId must be a number this account
+        owns.
         """
         form = await request.form()
         if form.get("HandoffData"):
             events.publish("handoff", "Transferring the call to the browser agent")
-            # callerId must be a number this account owns.
             body = (
                 f'<Dial callerId="{tac_config.phone_number}" timeout="30">'
                 f"<Client>{BROWSER_AGENT_IDENTITY}</Client>"

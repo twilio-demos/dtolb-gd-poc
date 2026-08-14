@@ -50,7 +50,11 @@ def _model() -> str:
 
 
 def _declare(tools: list[TACTool]) -> types.Tool:
-    """Convert TAC tools into one Gemini tool declaration."""
+    """Convert TAC tools into one Gemini tool declaration.
+
+    A tool whose every parameter is injected declares no parameters at all:
+    Vertex rejects an OBJECT schema with empty properties.
+    """
     declarations = []
     for tool in tools:
         schema = tool.params_json_schema
@@ -58,8 +62,6 @@ def _declare(tools: list[TACTool]) -> types.Tool:
             types.FunctionDeclaration(
                 name=tool.name,
                 description=tool.description,
-                # Vertex rejects an OBJECT schema with no properties, so a tool
-                # whose every parameter is injected must declare none at all.
                 parameters_json_schema=schema if schema.get("properties") else None,
             )
         )
@@ -89,7 +91,20 @@ async def run_turn(
     tools: list[TACTool],
     on_tool_call: Callable[[str], None],
 ) -> tuple[str, History]:
-    """Run one turn to completion, executing tool calls. Returns (reply, history)."""
+    """Run one turn to completion, executing tool calls. Returns (reply, history).
+
+    Tool results go back with role="user", matching the Gemini SDK's own
+    automatic-function-calling path. Thinking is off because 2.5 Flash reasons
+    before answering by default, which is dead air on a call. Failures are caught
+    and reported as text: the voice channel only logs exceptions raised from the
+    message callback, so raising here is silence on a live call.
+
+    Both failure exits — a part-less or blocked candidate, and a spent round
+    budget — return the pre-turn history, because contents would otherwise end on
+    a tool response with no model answer. That drops any tool round that already
+    ran: a sent SMS can leave no record, so VOICE_INSTRUCTIONS' "at most once per
+    call" has nothing to act on.
+    """
     by_name = {tool.name: tool for tool in tools}
     contents: History = [
         *history,
@@ -98,7 +113,6 @@ async def run_turn(
     config = types.GenerateContentConfig(
         system_instruction=instructions,
         tools=[_declare(tools)] if tools else None,
-        # 2.5 Flash reasons before answering by default; on a call that is dead air.
         thinking_config=types.ThinkingConfig(thinking_budget=0),
     )
 
@@ -110,12 +124,6 @@ async def run_turn(
 
             candidate = response.candidates[0].content if response.candidates else None
             if candidate is None or not candidate.parts:
-                # Safety block, no candidate, or a part-less MAX_TOKENS/RECITATION
-                # stop: with no model answer to close the turn, `contents` would end
-                # on a tool response, so hand back the pre-turn history instead. That
-                # drops any tool round that already ran — an SMS can be out with no
-                # record of it, leaving VOICE_INSTRUCTIONS' "at most once per call"
-                # nothing to act on.
                 return _FALLBACK_REPLY, history
             contents.append(candidate)
 
@@ -131,15 +139,9 @@ async def run_turn(
                         name=call.name, response=_as_response(result)
                     )
                 )
-            # role="user" carries tool results, matching the SDK's own
-            # automatic-function-calling path.
             contents.append(types.Content(role="user", parts=parts))
     except Exception as exc:
-        # The voice channel only logs exceptions raised from the message
-        # callback, so raising here is silence on a live call.
         print(f"LLM turn failed: {exc}")
         return _FALLBACK_REPLY, history
 
-    # Round budget spent with no answer — history is discarded for the same reason,
-    # and at the same cost, as the part-less case above.
     return _FALLBACK_REPLY, history

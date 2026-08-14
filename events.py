@@ -18,10 +18,10 @@ _subscribers: list[asyncio.Queue] = []
 def publish(event_type: str, text: str, **data: Any) -> None:
     """Push an event to every connected browser.
 
-    event_type: short machine tag ("call_status", "caller_said", "agent_said",
-                "tool", "sms_sent", "link_clicked", "handoff", ...)
-    text:       human-readable line for the feed
-    data:       any extra fields the page might want
+    event_type is the machine tag static/index.html styles each feed line by
+    ("call_status", "caller_said", "agent_said", "tool", "sms_sent",
+    "link_clicked", "handoff"); text is the feed line, and data any extra fields
+    the page might want.
     """
     event = {
         "type": event_type,
