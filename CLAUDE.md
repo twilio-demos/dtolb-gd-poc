@@ -28,8 +28,9 @@ composed from the TAC repo's own `getting_started/examples` (`outbound.py`,
   that archaeology belongs in KNOWN-ISSUES.md. The comments were pruned hard on
   2026-08-10 — don't grow them back.
 - Everything Twilio goes through the TAC SDK where possible.
-- LLM runtime is the OpenAI Agents SDK (TAC tools convert via
-  `.to_openai_agents_sdk_tool()`).
+- LLM runtime is Gemini on Vertex AI via `google-genai`. TAC ships no Gemini
+  adapter, so `llm.py` is the bridge: `TACTool.params_json_schema` becomes a
+  `FunctionDeclaration`, and calls dispatch through `await tool(**args)`.
 
 ### Three things that look like hardening but are NOT — do not remove
 
@@ -43,13 +44,14 @@ that has already happened once:
 | `action_url` → `/handoff` route | `app.py`, `web.py` | The built-in Studio handoff **cannot work on outbound calls** — Studio answers 400 for `Direction=outbound-api`. Removing this returns the demo to "an application error has occurred". KNOWN-ISSUES #17. |
 | The narrow consent wording in `VOICE_INSTRUCTIONS` | `app.py` | Loose triggers ("agrees", "thanks you") made the agent text the payment link on the caller's first "yes". KNOWN-ISSUES #18. |
 | `DEMO_ALLOWED_NUMBERS` guard | `web.py` `trigger_call` | `POST /api/call` places real billed calls to any number with no auth. On a stable public URL that is an open robocall endpoint. |
-| `uv.lock` tracked in git | repo root | Pins the TAC **git** dependency to one commit. Unpinned, the Pi builds against upstream `main` and the #1 workaround breaks (it calls `.model_dump()` on what would become plain dicts). |
+| `uv.lock` tracked in git | repo root | Pins the TAC **git** dependency to one commit. Unpinned, the Pi builds against upstream `main`, so the SDK surface `app.py` and `llm.py` are written against can move under a rebuild. |
 
 ## Layout
 
 | File | Role |
 |---|---|
-| `app.py` | All TAC: channels, LLM loop, the 3 tools, outbound call, `TrustProxyHTTPS` |
+| `app.py` | All TAC: channels, prompts, the 3 tools, outbound call, `TrustProxyHTTPS` |
+| `llm.py` | All Gemini: lazy Vertex client, `TACTool`→`FunctionDeclaration`, the tool loop |
 | `web.py` | Landing-page routes: trigger call (+ allowlist guard), SSE, softphone token, `/handoff` transfer TwiML, tracked `/pay/<id>` |
 | `events.py` | ~40-line in-memory SSE hub |
 | `static/index.html` | Landing page + Twilio Voice JS softphone (`browser-agent`) |
@@ -57,12 +59,12 @@ that has already happened once:
 | `knowledge/renewal-faq.md` | Owl Shoes renewal FAQ — the Enterprise Knowledge content |
 | `Dockerfile`, `.dockerignore` | twl deploy (linux/arm64, one `EXPOSE 8000`) |
 | `HANDOFF.md` | Status, architecture, and the traps — the doc to hand a new person |
-| `KNOWN-ISSUES.md` | 18 findings, current status per issue |
+| `KNOWN-ISSUES.md` | 19 findings, current status per issue |
 | `zscaler_issues.md` | ngrok vs. corporate TLS interception; partial workaround |
 | `docs/2026-08-10-tac-payment-reminder-design.md` | Approved design + decisions |
 | `README.md` | Setup walkthrough (provisioning, both public-domain options) |
 
-## Current state (2026-08-12)
+## Current state (2026-08-14)
 
 **Deployed and live:** `https://gd-poc.twl.dtolb.com` (twl dev box). Landing
 page, `/token`, the TAC webhook routes and the ConversationRelay websocket are
@@ -79,17 +81,20 @@ verified 7/7 on the demo's questions), Studio handoff flow, and phone number
 `+1XXXXXXXXXX` in Messaging Service `MG…(your Messaging Service)`. The
 Studio flow exists but is no longer invoked (#17).
 
-**Read `KNOWN-ISSUES.md` before changing code.** #1–#13 and #15–#18 are fixed.
-One item remains, and it isn't code:
+**Read `KNOWN-ISSUES.md` before changing code.** #2–#13 and #15–#18 are fixed.
+Two items remain:
 
 - **#1 / #17 upstream** — bug reports for `twilio-agent-connect-python` are
   drafted (serialization in #1; Studio handoff being unusable on outbound calls
   in #17) but **not filed**. Filing is public; ask first.
+- **#19** — the twl deploy has no Vertex credential, so it can't run the Gemini
+  path. Local and ngrok are unaffected.
 
-**Verified end to end on real traffic:** the outbound call, the LLM turns, the
-knowledge tool, the human handoff to the browser softphone, and — as of
-2026-08-12 — the **SMS payment link, delivered** (#13). Every leg of the demo has
-now run against live Twilio.
+**Verified end to end on real traffic — on the OpenAI runtime:** the outbound
+call, the LLM turns, the knowledge tool, the human handoff to the browser
+softphone, and — as of 2026-08-12 — the **SMS payment link, delivered** (#13).
+The runtime is now Gemini on Vertex, and no Gemini turn has run against a live
+call or against real Vertex at all.
 
 ## Verification bar
 
@@ -97,10 +102,14 @@ now run against live Twilio.
   containerized deploy, live signature verification (signed `https://` webhook →
   200, signed `wss://` upgrade → 101, forged signature → 403), **a real
   end-to-end call including the human handoff**, and **a delivered SMS** (#13).
-- No leg of the demo is unexercised any more. Check delivery in the Messages log
-  rather than trusting the live feed — the feed publishes `sms_sent` when TAC
-  accepts the message, which is *before* Twilio decides to reject it. All three
-  30034 failures in #13 looked like successes on the dashboard.
+- The Gemini runtime is **unexercised against a real model** — no Vertex call has
+  been made from this machine (no `gcloud`, no ADC), so verification stops at
+  imports, tool schemas and declaration shapes. The voice, SMS and handoff legs
+  were last exercised on the OpenAI build.
+- Check delivery in the Messages log rather than trusting the live feed — the feed
+  publishes `sms_sent` when TAC accepts the message, which is *before* Twilio
+  decides to reject it. All three 30034 failures in #13 looked like successes on
+  the dashboard.
 - Do **not** place test calls or send test SMS without asking — both cost money
   and ring a real phone.
 
@@ -109,6 +118,19 @@ now run against live Twilio.
 - **`load_dotenv(override=True)` is deliberate.** The shell exports a
   permissionless restricted `TWILIO_API_KEY` that otherwise shadows `.env` and
   makes every Twilio call 401 with a confusing authorization error.
+- **`llm.py` builds its Vertex client lazily.** `app.py` calls `load_dotenv()`
+  after its import block, so reading `GOOGLE_CLOUD_PROJECT` at module scope
+  there would see an empty env. Vertex auth is ADC — `gcloud auth
+  application-default login`, no key in `.env`.
+- **Missing Vertex config fails quietly and misleadingly.** `_get_client()`
+  raises `KeyError` inside `run_turn`'s broad `except`, and the
+  `welcome_greeting` is plain TwiML that needs no LLM — so the call answers and
+  sounds completely normal, then *every* turn speaks "Sorry, I'm having trouble
+  with that right now." with one line on stdout. It presents as a broken model;
+  it is an unset `GOOGLE_CLOUD_PROJECT` or missing ADC. Check stdout for
+  `LLM turn failed:` first.
+- **This branch is local/ngrok only.** `twl` injects env vars and ADC is a file,
+  so the deployed container has no Vertex credential yet.
 - **`.gitignore` has `.env.*`** so timestamped credential backups can't be
   committed. Keep `!.env.example`.
 - **ngrok works here only on a temporary IT bypass** (granted 2026-08-12).

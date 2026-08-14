@@ -22,20 +22,21 @@ landing page ──POST /api/call──▶ app.py ──TAC VoiceChannel──�
      ▲                            │
      │ SSE /events                │ ConversationRelay websocket (TAC handles it)
      │                            ▼
-     └──────── events.py ◀── handle_message_ready() ──▶ OpenAI Agents SDK
+     └──────── events.py ◀── handle_message_ready() ──▶ llm.py ──▶ Gemini (Vertex AI)
                                                           │  ├─ send_payment_link (custom tool)
      browser softphone ◀── /handoff TwiML ◀─ handoff ─────┘  ├─ search_renewal_faq (TAC knowledge tool)
      (Voice JS SDK)                                          └─ connect_to_human_agent (TAC handoff tool)
 ```
 
-- **`app.py`** — everything TAC: channels, the LLM loop, the three tools, outbound call.
+- **`app.py`** — everything TAC: channels, prompts, the three tools, outbound call.
+- **`llm.py`** — everything Gemini: the Vertex client, TAC tool → `FunctionDeclaration`, the tool loop.
 - **`web.py`** — landing-page routes: trigger call, SSE stream, softphone token, tracked `/pay/<id>` link.
 - **`events.py`** — 40-line SSE hub.
 - **`static/index.html`** — the landing page (vanilla JS + Twilio Voice JS SDK).
 - **`Dockerfile`** — for deploying to the `twl` dev box (linux/arm64).
 - **[`HANDOFF.md`](HANDOFF.md)** — current status, what works, and the traps.
   **Start here if you're picking this up.**
-- **[`KNOWN-ISSUES.md`](KNOWN-ISSUES.md)** — 18 findings and their current status.
+- **[`KNOWN-ISSUES.md`](KNOWN-ISSUES.md)** — 19 findings and their current status.
 
 The voice handoff is the neat part: the LLM calls `connect_to_human_agent`,
 TAC finishes speaking the goodbye sentence, ends the ConversationRelay session,
@@ -54,7 +55,8 @@ route — which dials the `browser-agent` client, ringing the landing page.
 ## Setup (one time, ~15 minutes)
 
 Prereqs: Python 3.10+, [uv](https://docs.astral.sh/uv/), a Twilio account with a
-voice+SMS-capable phone number, an OpenAI API key, and **one way to be publicly
+voice+SMS-capable phone number, a Google Cloud project with the Vertex AI API
+enabled (`gcloud auth application-default login`), and **one way to be publicly
 reachable** — either [ngrok](https://ngrok.com) or the `twl` dev box (see
 [Two ways to be publicly reachable](#two-ways-to-be-publicly-reachable)).
 

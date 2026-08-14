@@ -1,6 +1,6 @@
 # Handoff — TAC Payment Reminder Demo
 
-Last updated 2026-08-12.
+Last updated 2026-08-14.
 
 A teaching demo of the [Twilio Agent Connect (TAC) Python SDK](https://github.com/twilio/twilio-agent-connect-python)
 for hackathon teams: an AI agent phones a customer about updating their payment
@@ -21,7 +21,9 @@ where the project stands, what works, and what will bite you.
 | Payment link by SMS | ✅ Working, one delivered message (2026-08-12) |
 | Landing page + live SSE feed | ✅ Working |
 
-Every leg has now run against live Twilio. The SMS leg was the last holdout: the
+Every leg has run against live Twilio — on the OpenAI runtime. The LLM now runs on
+Gemini via Vertex AI (`llm.py`), which has not been on a live call, so read those
+✅s as earned on the previous runtime. The SMS leg was the last holdout: the
 sending number sat in a Messaging Service whose 10DLC campaign never verified, so
 Twilio rejected US-bound SMS with **30034 ("Message from an Unregistered
 Number")**. Moving the number into an already-approved campaign fixed it —
@@ -41,7 +43,8 @@ it; all three 30034 failures looked like successes on the dashboard.
 **ngrok works here only on a temporary IT bypass** (granted 2026-08-12) that can be
 revoked without notice. If it starts failing with an x509 error, suspect the bypass
 lapsed before debugging anything else — `zscaler_issues.md` has the detail. The twl
-deploy stays the durable path and the one a colleague can reproduce.
+deploy stays the durable path and the one a colleague can reproduce, but it can't
+authenticate to Vertex yet (KNOWN-ISSUES #19), so the Gemini path runs locally only.
 
 A new ngrok URL needs an `.env` edit **and** a restart: `action_url` is built at
 import time.
@@ -58,7 +61,7 @@ landing page ──POST /api/call──▶ app.py ──TAC VoiceChannel──�
      ▲                            │
      │ SSE /events                │ ConversationRelay websocket (TAC handles it)
      │                            ▼
-     └──────── events.py ◀── handle_message_ready() ──▶ OpenAI Agents SDK
+     └──────── events.py ◀── handle_message_ready() ──▶ llm.py ──▶ Gemini (Vertex AI)
                                                           ├─ send_payment_link (custom TAC tool)
      browser softphone ◀── /handoff TwiML ◀── handoff ────┤─ search_renewal_faq (TAC knowledge tool)
      (Voice JS SDK)                                       └─ connect_to_human_agent (TAC handoff tool)
@@ -66,7 +69,8 @@ landing page ──POST /api/call──▶ app.py ──TAC VoiceChannel──�
 
 | File | Role |
 |---|---|
-| `app.py` | All TAC wiring: channels, the LLM loop, the three tools, the outbound call |
+| `app.py` | All TAC wiring: channels, prompts, the three tools, the outbound call |
+| `llm.py` | All Gemini: lazy Vertex client, `TACTool`→`FunctionDeclaration`, the tool loop |
 | `web.py` | Landing page routes, SSE, softphone token, `/handoff` transfer TwiML, tracked `/pay/<id>` |
 | `events.py` | ~40-line in-memory SSE hub |
 | `static/index.html` | Landing page + Twilio Voice JS softphone (client `browser-agent`) |
@@ -123,8 +127,8 @@ the caller's first "yes" fired the tool before any conversation happened.
 Describe triggers so the model can't satisfy them accidentally.
 
 **`uv.lock` is committed on purpose.** It pins the TAC git dependency to one
-commit. Unpinned, a rebuild resolves upstream `main` and the knowledge-tool
-workaround in `app.py` breaks.
+commit. Unpinned, a rebuild resolves upstream `main` and the SDK surface `app.py`
+and `llm.py` are written against can move.
 
 ## Open items
 
@@ -140,7 +144,8 @@ workaround in `app.py` breaks.
 2. **Two upstream bug reports, drafted but not filed** — in `KNOWN-ISSUES.md`
    #1 (Pydantic serialization in `to_openai_agents_sdk_tool()`) and #17 (Studio
    handoff unusable on outbound calls). Both are worth sending to
-   `twilio/twilio-agent-connect-python`.
+   `twilio/twilio-agent-connect-python`. #1 no longer affects this demo — the
+   Gemini path never calls that method — but the upstream bug is unfixed.
 3. **Brand consistency** — the demo is themed "Owl Shoes" throughout (prompt,
    greeting, FAQ, payment page). Rebranding means changing all of them together.
 

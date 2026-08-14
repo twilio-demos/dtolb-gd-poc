@@ -2,18 +2,21 @@
 
 Findings from a code review and from getting the demo running on real calls
 (2026-08-10). Issues 1–10 came from reviewing the code against the installed TAC
-SDK source; 11–18 came from provisioning, deploying, and calling a real phone.
+SDK source; 11–18 came from provisioning, deploying, and calling a real phone; #19
+came from the move to Gemini on Vertex.
 
 | | Issues |
 |---|---|
 | 📤 Open — upstream reports drafted, not filed | #1, #17 |
+| 🚧 Open — out of scope, doesn't affect local or ngrok | #19 |
 | ℹ️ Won't fix — documented workaround | #14 |
 | ✅ Fixed | #2–#13, #15, #16, #18 |
 
 **"Fixed" means reviewed and exercised**, not formally tested — there are no
-automated tests. Every demo path has now run against live Twilio: the outbound
-call, the AI conversation, the FAQ lookup, the human handoff, and the SMS payment
-link (#13, delivered 2026-08-12).
+automated tests. Every demo path has run against live Twilio on the OpenAI
+runtime: the outbound call, the AI conversation, the FAQ lookup, the human handoff,
+and the SMS payment link (#13, delivered 2026-08-12). The Gemini runtime that
+replaced it has not been on a live call.
 
 Judged against this project's bar: teaching/sample code, not production.
 Production concerns (auth, persistence, multi-user, retries) are intentionally out
@@ -24,18 +27,19 @@ of scope.
 ## Open
 
 ### 1. Knowledge tool results aren't JSON-serializable
-**Upstream SDK bug. Worked around here; report drafted below, not filed.**
+**Upstream SDK bug. Unreachable here since the Gemini move; report drafted below,
+not filed.**
 
 `TACTool.to_openai_agents_sdk_tool()`'s `on_invoke` encodes results with a bare
 `json.dumps()` (`tac/tools/base.py`), but `create_knowledge_tool` returns
 `list[KnowledgeChunkResult]` Pydantic models. The search succeeds, encoding raises
 `TypeError`, the voice channel only logs it — and the caller hears dead air.
 
-**Applied workaround** (`app.py`, `get_knowledge_tool`): the SDK tool is bound to a
-local `search`, and a thin wrapper returns `[chunk.model_dump() for chunk in
-chunks]`, rebuilt with `create_tool(...)` reusing `search.params_json_schema` so
-the LLM-facing parameter stays exactly `query`. **Delete the wrapper once this is
-fixed upstream.**
+**No longer reachable here (2026-08-14).** The demo moved off the OpenAI Agents
+SDK to Gemini on Vertex, so `to_openai_agents_sdk_tool()` is never called. The
+`app.py` wrapper is deleted; `llm._as_response` flattens Pydantic for every tool
+instead, duck-typed so plain dicts pass through unchanged. The upstream bug is
+still real and the report below still stands.
 
 <details><summary>Upstream bug report draft</summary>
 
@@ -107,6 +111,19 @@ outbound.
 executions proves the rejection happened before any widget, which rules out widget
 config. Replaying the webhook yourself separates the cases: unsigned → 401, signed
 but outbound → 400.
+
+### 19. The twl deploy has no Vertex credential
+**Open. Out of scope for the Gemini migration; local + ngrok are unaffected.**
+
+`twl env set` injects environment variables only — no file secrets, no volume
+mounts — and `.dockerignore` deliberately keeps credentials out of the build
+context. ADC is a file on the laptop, so the container cannot authenticate to
+Vertex.
+
+**Likely fix:** a service-account JSON as a base64 env var, decoded to
+`service_account.Credentials.from_service_account_info(...)` and passed as
+`genai.Client(credentials=...)`. Costs one long-lived secret, which is why it
+wasn't done blind.
 
 ---
 
