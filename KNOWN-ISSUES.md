@@ -297,3 +297,24 @@ websocket.
 | 9 | The softphone token expires after ~1h with no listeners, so the header still claimed "ready" while the Device was unregistered | `tokenWillExpire` refresh plus `error` / `unregistered` handlers |
 | 10 | `memory_response` was always `None` (both channels use `memory_mode="never"`) while a hand-rolled history dict did the real work | Renamed `_memory_response` with a note on enabling TAC memory |
 | 12 | The agent's persona and the knowledge base named different companies, so renewal answers quoted another company's policy | Knowledge base rebuilt from `knowledge/renewal-faq.md`; both are consistent |
+
+---
+
+## SDK behavior the code is shaped around
+
+Not findings — just vendor behavior that explains why the source looks the way it
+does. Kept here so the modules themselves stay readable.
+
+| Where | Behavior |
+|---|---|
+| `app.py` `action_url` | Studio answers 400 for `Direction=outbound-api`, so TAC's built-in Studio handoff can't serve an outbound call. An explicit `default_twiml_options.action_url` outranks `studio_handoff_flow_sid`, so the relay exits to `/handoff` (#17). |
+| `app.py` `payment_link_tool_for` | `configure_injection()` mutates the tool in place and returns `self`, so a tool is built per conversation. The knowledge tool takes no session and is built once (#3). |
+| `app.py` `handoff_tool_for` | `create_studio_handoff_tool` raises `ValueError` without a flow SID, Orchestrator and memory store. It degrades to `None` because the voice channel only *logs* exceptions from the message callback — a raise there is dead air on every utterance (#2). |
+| `app.py` `on_call_status` | Registering the handler is the side effect that makes TAC attach the status callback URL; Twilio then reports only `completed` unless `status_callback_event` lists the earlier states out. |
+| `llm.py` `_model_facing_parameters` | Vertex rejects an OBJECT schema with empty `properties`, so an all-injected tool must declare no parameters at all. |
+| `llm.py` `_as_response` | TAC's knowledge tool returns Pydantic models, which Gemini can't serialize, so results are flattened with `model_dump()` (#1). |
+| `llm.py` `run_turn` | Tool results go back with `role="user"`, matching the Gemini SDK's own automatic-function-calling path. Thinking is off — 2.5 Flash reasons before answering by default, which is dead air on a call. Exceptions become text for the same reason as the handoff tool. Both failure exits return the *pre-turn* history, which drops an already-executed tool round — see `docs/COMPLEXITY-NOTES.md`. |
+| `llm.py` `_get_client` | Built lazily: `app.py` calls `load_dotenv()` after its import block, so reading env at import time here would read it too early. |
+| `web.py` `/handoff` | Twilio requests the `action_url` whenever a ConversationRelay session ends, not only on a handoff, so it dials the browser only when the POST carries `HandoffData`. `callerId` must be a number this account owns. |
+| `web.py` `/token` | `incoming_allow` on the Voice grant is what lets `/handoff`'s `<Dial><Client>` ring the page. |
+| `events.py` `publish` | `event_type` values are a contract with `static/index.html`, which styles each feed line by them. |
