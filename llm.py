@@ -8,6 +8,26 @@ applies the tool's injected arguments. Everything else here is the turn loop.
 
 Knows nothing about Twilio on purpose — run_turn takes an on_tool_call callback
 so the caller publishes its own events.
+
+Vertex, Gemini and TAC behavior the turn loop is shaped around:
+
+- Vertex rejects an OBJECT schema whose properties are empty, so a tool whose every
+  parameter is injected must declare no parameters at all rather than an empty set.
+- TAC's knowledge tool returns Pydantic models, which Gemini cannot serialize, so
+  tool results are flattened with model_dump() on the way back.
+- Tool results go back with role="user", matching the Gemini SDK's own
+  automatic-function-calling path.
+- Thinking is off: 2.5 Flash reasons before answering by default, which is dead air
+  on a phone call.
+- Exceptions are caught and answered as text, because TAC's voice channel only logs
+  exceptions raised from the message callback — raising is silence on a live call.
+- The client is built lazily: app.py calls load_dotenv() after its import block, so
+  reading the env at import time here would read it before .env is loaded.
+
+Known quirk, not a vendor one: both of run_turn's failure exits return the *pre-turn*
+history, because contents would otherwise end on a tool response with no model answer.
+That drops any tool round that already ran — a sent SMS can leave no record, so
+VOICE_INSTRUCTIONS' "at most once per call" has nothing to act on.
 """
 
 import os
@@ -32,13 +52,7 @@ _client: genai.Client | None = None
 
 
 def _get_client() -> genai.Client:
-    """Return the Vertex client, building it on first use.
-
-    Returns:
-        A process-wide genai.Client. Not built at import: app.py calls
-        load_dotenv() after its import block, so reading the env any earlier
-        would read it before .env is loaded.
-    """
+    """Return the process-wide Vertex client, building it on first use."""
     global _client
     if _client is None:
         _client = genai.Client(
@@ -53,12 +67,7 @@ def _model_facing_parameters(tool: TACTool) -> dict[str, object] | None:
     """Return the parameter schema Gemini should see for one tool.
 
     Args:
-        tool: The tool being declared.
-
-    Returns:
-        The tool's JSON schema, or None when every parameter is injected and the
-        model has nothing to fill in — Vertex rejects an OBJECT schema whose
-        properties are empty.
+        tool: The tool being declared; an all-injected one declares no parameters.
     """
     schema = tool.params_json_schema
     return schema if schema.get("properties") else None
@@ -69,9 +78,6 @@ def _declare(tools: list[TACTool]) -> types.Tool:
 
     Args:
         tools: The tools this turn may call.
-
-    Returns:
-        A single types.Tool carrying one FunctionDeclaration per tool.
     """
     return types.Tool(
         function_declarations=[
@@ -86,26 +92,19 @@ def _declare(tools: list[TACTool]) -> types.Tool:
 
 
 def _jsonable(value: object) -> object:
-    """Flatten one tool result into something Gemini can serialize.
+    """Flatten a Pydantic tool result; anything else passes through untouched.
 
     Args:
         value: A tool's return value, or one element of it.
-
-    Returns:
-        value.model_dump() for Pydantic models — TAC's knowledge tool returns
-        them and Gemini cannot serialize them — and value untouched otherwise.
     """
     return value.model_dump() if isinstance(value, BaseModel) else value
 
 
 def _as_response(result: object) -> dict[str, object]:
-    """Wrap a tool's return value the way Gemini expects.
+    """Wrap a tool's return value for types.Part.from_function_response.
 
     Args:
         result: Whatever the TACTool returned.
-
-    Returns:
-        The payload for types.Part.from_function_response.
     """
     if isinstance(result, list):
         return {"result": [_jsonable(item) for item in result]}
@@ -122,26 +121,12 @@ async def run_turn(
 ) -> tuple[str, History]:
     """Run one turn to completion, executing whatever tools the model calls.
 
-    Thinking is off because 2.5 Flash reasons before answering by default, which
-    is dead air on a call. Failures are caught and answered as text: TAC's voice
-    channel only logs exceptions raised from the message callback, so raising here
-    would be silence on a live call.
-
     Args:
         user_message: What the customer just said or texted.
         history: Contents from earlier turns of this conversation.
         instructions: The system instruction for this channel.
-        tools: The tools the model may call. Their results go back with
-            role="user", matching the Gemini SDK's own automatic
-            function-calling path.
-        on_tool_call: Notified with each tool name as it is invoked, so the
-            caller can publish its own events.
-
-    Returns:
-        The reply to speak or text, and the history to keep. Every failure exit
-        returns the *pre-turn* history, because contents would otherwise end on a
-        tool response with no model answer — which also means a tool round that
-        already ran (a sent SMS) leaves no record.
+        tools: The tools the model may call.
+        on_tool_call: Notified with each tool name as it is invoked.
     """
     by_name = {tool.name: tool for tool in tools}
     contents: History = [

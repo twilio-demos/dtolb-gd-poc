@@ -12,6 +12,27 @@ Everything Twilio goes through the TAC SDK. The landing page at / watches the
 whole call live over SSE.
 
 Run:  uv run python app.py   (see README for the one-time Twilio setup)
+
+TAC and Twilio behavior this file is shaped around, which the code cannot say:
+
+- Studio answers 400 for Direction=outbound-api, so TAC's built-in Studio handoff
+  cannot serve an outbound call. An explicit default_twiml_options.action_url
+  outranks studio_handoff_flow_sid, so ConversationRelay exits to /handoff, which
+  renders the transfer TwiML itself.
+- A tool is built per conversation because configure_injection() mutates the tool in
+  place and returns self; one shared instance would leak a session into the next
+  caller's turn. The knowledge tool takes no session, so it is built once and shared.
+- create_studio_handoff_tool wants a Studio flow SID, Conversation Orchestrator and a
+  memory store, and raises without them. handoff_tool_for returns None instead of
+  raising, because the voice channel only *logs* exceptions from the message
+  callback — a raise there is dead air on every utterance.
+- The payment link and the handoff are voice-only: an SMS replier already has the
+  link, and Studio handoff has no messaging path.
+- on_message_ready serves both channels, and its memory_response is always None while
+  both use the default memory_mode="never" — conversation_history carries the thread.
+- Registering on_call_status is the side effect that makes TAC attach the status
+  callback URL to the outbound call, and Twilio then reports only "completed" unless
+  status_callback_event lists the earlier states out.
 """
 
 import os
@@ -62,10 +83,6 @@ voice_channel = VoiceChannel(
                 "Owl Shoes. I'm reaching out with a quick reminder to update "
                 "the payment information on your account. Is now an okay time?"
             ),
-            # Where the still-live call goes when ConversationRelay ends. Studio
-            # answers 400 for Direction=outbound-api, so TAC's built-in Studio
-            # handoff cannot serve this call; an explicit action_url outranks
-            # studio_handoff_flow_sid and /handoff renders the transfer TwiML.
             action_url=f"https://{tac.config.voice_public_domain}/handoff",
         ),
     ),
@@ -120,11 +137,7 @@ def _mint_tracked_link(to_number: str) -> str:
     """Register a payment URL whose click the live feed can attribute.
 
     Args:
-        to_number: The customer about to be texted, remembered so that GET
-            /pay/{link_id} can name them when the link is opened.
-
-    Returns:
-        The URL to text, on this deployment's public domain.
+        to_number: The customer about to be texted; /pay/{link_id} names them.
     """
     link_id = uuid.uuid4().hex[:8]
     web.PAYMENT_LINKS[link_id] = web.PaymentLink(to=to_number)
@@ -161,16 +174,8 @@ async def _send_payment_link(
 def payment_link_tool_for(session: ConversationSession) -> TACTool:
     """Build this conversation's own copy of the send_payment_link tool.
 
-    One per session rather than one shared tool: configure_injection() mutates
-    the tool in place and returns self, so sharing would leak this session into
-    the next caller's turn.
-
     Args:
-        session: The conversation whose customer gets the text; injected into
-            _send_payment_link.
-
-    Returns:
-        A tool the model sees as PAYMENT_LINK_TOOL, taking no arguments.
+        session: The conversation injected into _send_payment_link.
     """
     tool = function_tool(name=PAYMENT_LINK_TOOL)(_send_payment_link)
     return tool.configure_injection(session=session)
@@ -180,13 +185,7 @@ _shared_knowledge_tool: TACTool | None = None
 
 
 async def knowledge_tool() -> TACTool | None:
-    """Build the renewal-FAQ tool on first use and share it from then on.
-
-    Returns:
-        A tool the model sees as RENEWAL_FAQ_TOOL, or None when this deployment
-        has no knowledge base. Shared rather than per-session because Enterprise
-        Knowledge search needs no conversation context.
-    """
+    """Build the shared renewal-FAQ tool on first use; None without a knowledge base."""
     global _shared_knowledge_tool
     if _shared_knowledge_tool is None and tac.knowledge_client and tac.config.knowledge_base_id:
         _shared_knowledge_tool = await create_knowledge_tool(
@@ -207,13 +206,6 @@ def handoff_tool_for(session: ConversationSession) -> TACTool | None:
 
     Args:
         session: The conversation Studio is being asked to take over.
-
-    Returns:
-        A tool the model sees as HUMAN_HANDOFF_TOOL, or None when handoff is
-        unavailable: create_studio_handoff_tool wants a Studio flow SID,
-        Conversation Orchestrator and a memory store, and letting it raise would
-        be dead air on every utterance, because TAC's voice channel only logs
-        exceptions raised from the message callback.
     """
     try:
         return create_studio_handoff_tool(
@@ -232,15 +224,10 @@ def handoff_tool_for(session: ConversationSession) -> TACTool | None:
 
 
 async def tools_for(session: ConversationSession) -> list[TACTool]:
-    """Assemble the tools the agent may call on this conversation.
+    """Assemble the tools the agent may call, skipping anything unprovisioned.
 
     Args:
         session: The conversation being served; its channel decides the set.
-
-    Returns:
-        The tools available on this channel. The payment link and the handoff are
-        voice-only — an SMS replier already has the link, and Studio handoff has
-        no messaging path — and anything unprovisioned in Twilio is left out.
     """
     voice_only = (
         [payment_link_tool_for(session), handoff_tool_for(session)]
@@ -253,11 +240,9 @@ async def tools_for(session: ConversationSession) -> list[TACTool]:
 def publish_tool_call(tool_name: str) -> None:
     """Announce a tool call on the live feed.
 
-    The handoff gets a second, louder line: that is the moment the landing page's
-    softphone is about to ring.
-
     Args:
-        tool_name: The tool llm.run_turn is invoking.
+        tool_name: The tool llm.run_turn is invoking; the handoff, which is the
+            moment the softphone is about to ring, gets a second louder line.
     """
     events.publish("tool", f"Agent used tool: {tool_name}")
     if tool_name == HUMAN_HANDOFF_TOOL:
@@ -276,14 +261,8 @@ async def handle_message_ready(
 
     Args:
         user_message: What the customer just said or texted.
-        session: The conversation it arrived on; its channel picks the prompt and
-            the tools.
-        _memory_response: Always None — both channels use the default
-            memory_mode="never", so conversation_history carries the thread
-            instead.
-
-    Returns:
-        The agent's reply, which TAC speaks or texts back.
+        session: The conversation it arrived on; picks the prompt and the tools.
+        _memory_response: Always None under memory_mode="never".
     """
     events.publish("caller_said", f"Customer: {user_message}")
 
@@ -307,9 +286,6 @@ tac.on_message_ready(handle_message_ready)
 async def on_call_status(event: CallStatusEvent) -> None:
     """Publish each call-status webhook to the live feed.
 
-    Registering this handler is also what makes TAC attach the status callback
-    URL to the outbound call.
-
     Args:
         event: Twilio's status callback, as parsed by the voice channel.
     """
@@ -324,10 +300,6 @@ async def start_reminder_call(to_number: str) -> str:
 
     Args:
         to_number: The customer's number in E.164.
-
-    Returns:
-        The new call's SID. status_callback_event is listed out because Twilio
-        otherwise reports only "completed".
     """
     result = await voice_channel.initiate_outbound_conversation(
         InitiateVoiceConversationOptions(
@@ -350,14 +322,11 @@ class TrustProxyHTTPS:
     """Force ``X-Forwarded-Proto: https`` on HTTP and WebSocket scopes.
 
     Twilio signs the full request URL and TAC validates that signature using
-    ``X-Forwarded-Proto``, preferring it over the ASGI scheme. A proxy that
-    terminates TLS and forwards plain HTTP sends ``http``, so validation runs
-    against the wrong URL and every Twilio callback 403s.
-
-    Enable with ``TRUST_PROXY_HTTPS=1`` behind such a proxy; leave it unset
-    under ngrok, which forwards the header correctly. Pure ASGI because
-    ``@app.middleware("http")`` never sees ``websocket`` scopes, and the
-    ConversationRelay socket is validated the same way.
+    ``X-Forwarded-Proto`` in preference to the ASGI scheme, so behind a proxy that
+    terminates TLS and forwards plain HTTP every Twilio callback 403s — webhooks and
+    the ConversationRelay websocket alike. Enable with ``TRUST_PROXY_HTTPS=1``; leave
+    it unset under ngrok, which forwards the header correctly. Pure ASGI because
+    ``@app.middleware("http")`` never sees ``websocket`` scopes.
     """
 
     def __init__(self, app: Any) -> None:
