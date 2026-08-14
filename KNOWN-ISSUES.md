@@ -13,9 +13,9 @@ came from the move to Gemini on Vertex.
 | ✅ Fixed | #2–#13, #15, #16, #18 |
 
 **"Fixed" means reviewed and exercised**, not formally tested — there are no
-automated tests. Every demo path has run against live Twilio on the OpenAI
-runtime: the outbound call, the AI conversation, the FAQ lookup, the human handoff,
-and the SMS payment link (#13, delivered 2026-08-12). The Gemini runtime that
+automated tests. Every demo path has run against live Twilio, against an OpenAI
+model: the outbound call, the AI conversation, the FAQ lookup, the human handoff,
+and the SMS payment link (#13, delivered 2026-08-12). The Gemini model that
 replaced it has not been on a live call.
 
 Judged against this project's bar: teaching/sample code, not production.
@@ -27,19 +27,17 @@ of scope.
 ## Open
 
 ### 1. Knowledge tool results aren't JSON-serializable
-**Upstream SDK bug. Unreachable here since the Gemini move; report drafted below,
-not filed.**
+**Upstream SDK bug. Worked around here; report drafted below, not filed.**
 
 `TACTool.to_openai_agents_sdk_tool()`'s `on_invoke` encodes results with a bare
 `json.dumps()` (`tac/tools/base.py`), but `create_knowledge_tool` returns
 `list[KnowledgeChunkResult]` Pydantic models. The search succeeds, encoding raises
 `TypeError`, the voice channel only logs it — and the caller hears dead air.
 
-**No longer reachable here (2026-08-14).** The demo moved off the OpenAI Agents
-SDK to Gemini on Vertex, so `to_openai_agents_sdk_tool()` is never called. The
-`app.py` wrapper is deleted; `llm._as_response` flattens Pydantic for every tool
-instead, duck-typed so plain dicts pass through unchanged. The upstream bug is
-still real and the report below still stands.
+**Workaround:** `knowledge_tool()` in `app.py` wraps the built-in tool and returns
+`[chunk.model_dump() for chunk in await search(query=query)]`, reusing
+`search.params_json_schema` so the model-facing parameter stays exactly `query`.
+Delete the wrapper once this is fixed upstream.
 
 <details><summary>Upstream bug report draft</summary>
 
@@ -120,8 +118,8 @@ but outbound → 400.
 **A scoping note, not a defect. Nothing to fix.**
 
 `twl env set` injects environment variables only, and ADC is a file on the
-laptop, so the container has no Vertex credential and the Gemini path falls back
-on every turn there.
+laptop, so the container has no Vertex credential and every turn there is dead
+air.
 
 That is acceptable rather than broken: the twl dev box is this machine's own
 scratch deploy, not a path anyone else reproduces. Making the container work would
@@ -129,7 +127,7 @@ mean carrying a long-lived service-account secret for no benefit.
 
 Local + ngrok is the intended target, and is itself unexercised — this machine has
 no `gcloud` and no ADC file. Running Gemini anywhere needs `gcloud auth
-application-default login` plus `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` and
+application-default login` plus `VERTEXAI_PROJECT`, `VERTEXAI_LOCATION` and
 `GEMINI_MODEL` in `.env` first.
 
 ### 14. Two deployments collide on the softphone identity
@@ -311,10 +309,7 @@ does. Kept here so the modules themselves stay readable.
 | `app.py` `payment_link_tool_for` | `configure_injection()` mutates the tool in place and returns `self`, so a tool is built per conversation. The knowledge tool takes no session and is built once (#3). |
 | `app.py` `handoff_tool_for` | `create_studio_handoff_tool` raises `ValueError` without a flow SID, Orchestrator and memory store. It degrades to `None` because the voice channel only *logs* exceptions from the message callback — a raise there is dead air on every utterance (#2). |
 | `app.py` `on_call_status` | Registering the handler is the side effect that makes TAC attach the status callback URL; Twilio then reports only `completed` unless `status_callback_event` lists the earlier states out. |
-| `llm.py` `_model_facing_parameters` | Vertex rejects an OBJECT schema with empty `properties`, so an all-injected tool must declare no parameters at all. |
-| `llm.py` `_as_response` | TAC's knowledge tool returns Pydantic models, which Gemini can't serialize, so results are flattened with `model_dump()` (#1). |
-| `llm.py` `run_turn` | Tool results go back with `role="user"`, matching the Gemini SDK's own automatic-function-calling path. Thinking is off — 2.5 Flash reasons before answering by default, which is dead air on a call. Exceptions become text for the same reason as the handoff tool. Both failure exits return the *pre-turn* history, which drops an already-executed tool round — see `docs/COMPLEXITY-NOTES.md`. |
-| `llm.py` `_get_client` | Built lazily: `app.py` calls `load_dotenv()` after its import block, so reading env at import time here would read it too early. |
+| `app.py` `knowledge_tool` | `to_openai_agents_sdk_tool()` encodes results with a bare `json.dumps()`, which raises on the Pydantic chunks the built-in knowledge tool returns, so the wrapper flattens them with `model_dump()` (#1). |
 | `web.py` `/handoff` | Twilio requests the `action_url` whenever a ConversationRelay session ends, not only on a handoff, so it dials the browser only when the POST carries `HandoffData`. `callerId` must be a number this account owns. |
 | `web.py` `/token` | `incoming_allow` on the Voice grant is what lets `/handoff`'s `<Dial><Client>` ring the page. |
 | `events.py` `publish` | `event_type` values are a contract with `static/index.html`, which styles each feed line by them. |

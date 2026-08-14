@@ -1,5 +1,8 @@
 # Gemini / Vertex AI Migration Implementation Plan
 
+> **Superseded.** This plans the hand-rolled `google-genai` design, which was
+> replaced by `LitellmModel` on the OpenAI Agents SDK. Kept only as a record.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Replace the OpenAI Agents SDK with Gemini on Vertex AI as the demo's LLM runtime, moving the TAC→LLM tool bridge into a new `llm.py`.

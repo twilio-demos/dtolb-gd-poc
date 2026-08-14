@@ -21,9 +21,9 @@ where the project stands, what works, and what will bite you.
 | Payment link by SMS | ✅ Working, one delivered message (2026-08-12) |
 | Landing page + live SSE feed | ✅ Working |
 
-Every leg has run against live Twilio — on the OpenAI runtime. The LLM now runs on
-Gemini via Vertex AI (`llm.py`), which has not been on a live call, so read the
-**call, the handoff and the SMS** ✅s as earned on the previous runtime; the
+Every leg has run against live Twilio — against an OpenAI model. The LLM loop in
+`app.py` now points at Gemini on Vertex, which has not been on a live call, so read
+the **call, the handoff and the SMS** ✅s as earned on the previous model; the
 knowledge base's 7/7 and the live feed don't route through a model turn. The SMS
 leg was the last holdout: the sending number sat in a Messaging Service whose
 10DLC campaign never verified, so Twilio rejected US-bound SMS with **30034
@@ -63,7 +63,7 @@ landing page ──POST /api/call──▶ app.py ──TAC VoiceChannel──�
      ▲                            │
      │ SSE /events                │ ConversationRelay websocket (TAC handles it)
      │                            ▼
-     └──────── events.py ◀── handle_message_ready() ──▶ llm.py ──▶ Gemini (Vertex AI)
+     └──────── events.py ◀── handle_message_ready() ──▶ OpenAI Agents SDK ──▶ Gemini (Vertex, via LiteLLM)
                                                           ├─ send_payment_link (custom TAC tool)
      browser softphone ◀── /handoff TwiML ◀── handoff ────┤─ search_renewal_faq (TAC knowledge tool)
      (Voice JS SDK)                                       └─ connect_to_human_agent (TAC handoff tool)
@@ -71,8 +71,7 @@ landing page ──POST /api/call──▶ app.py ──TAC VoiceChannel──�
 
 | File | Role |
 |---|---|
-| `app.py` | All TAC wiring: channels, prompts, the three tools, the outbound call |
-| `llm.py` | All Gemini: lazy Vertex client, `TACTool`→`FunctionDeclaration`, the tool loop |
+| `app.py` | All TAC wiring: channels, prompts, the three tools, the LLM loop, the outbound call |
 | `web.py` | Landing page routes, SSE, softphone token, `/handoff` transfer TwiML, tracked `/pay/<id>` |
 | `events.py` | ~40-line in-memory SSE hub |
 | `static/index.html` | Landing page + Twilio Voice JS softphone (client `browser-agent`) |
@@ -130,7 +129,7 @@ Describe triggers so the model can't satisfy them accidentally.
 
 **`uv.lock` is committed on purpose.** It pins the TAC git dependency to one
 commit. Unpinned, a rebuild resolves upstream `main` and the SDK surface `app.py`
-and `llm.py` are written against can move.
+is written against can move.
 
 ## Open items
 
@@ -146,8 +145,8 @@ and `llm.py` are written against can move.
 2. **Two upstream bug reports, drafted but not filed** — in `KNOWN-ISSUES.md`
    #1 (Pydantic serialization in `to_openai_agents_sdk_tool()`) and #17 (Studio
    handoff unusable on outbound calls). Both are worth sending to
-   `twilio/twilio-agent-connect-python`. #1 no longer affects this demo — the
-   Gemini path never calls that method — but the upstream bug is unfixed.
+   `twilio/twilio-agent-connect-python`. #1 is worked around in `app.py`'s
+   `knowledge_tool()`; the wrapper goes away if it's fixed upstream.
 3. **Brand consistency** — the demo is themed "Owl Shoes" throughout (prompt,
    greeting, FAQ, payment page). Rebranding means changing all of them together.
 

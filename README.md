@@ -22,14 +22,13 @@ landing page ──POST /api/call──▶ app.py ──TAC VoiceChannel──�
      ▲                            │
      │ SSE /events                │ ConversationRelay websocket (TAC handles it)
      │                            ▼
-     └──────── events.py ◀── handle_message_ready() ──▶ llm.py ──▶ Gemini (Vertex AI)
+     └──────── events.py ◀── handle_message_ready() ──▶ OpenAI Agents SDK ──▶ Gemini (Vertex, via LiteLLM)
                                                           │  ├─ send_payment_link (custom tool)
      browser softphone ◀── /handoff TwiML ◀─ handoff ─────┘  ├─ search_renewal_faq (TAC knowledge tool)
      (Voice JS SDK)                                          └─ connect_to_human_agent (TAC handoff tool)
 ```
 
-- **`app.py`** — everything TAC: channels, prompts, the three tools, outbound call.
-- **`llm.py`** — everything Gemini: the Vertex client, TAC tool → `FunctionDeclaration`, the tool loop.
+- **`app.py`** — everything TAC: channels, prompts, the three tools, the LLM loop, outbound call.
 - **`web.py`** — landing-page routes: trigger call, SSE stream, softphone token, tracked `/pay/<id>` link.
 - **`events.py`** — 40-line SSE hub.
 - **`static/index.html`** — the landing page (vanilla JS + Twilio Voice JS SDK).
@@ -96,8 +95,9 @@ Two deliberate choices there:
 
 ### 2. Google Cloud (Vertex AI)
 
-The LLM runs on Gemini through Vertex AI, authenticated with Application Default
-Credentials — there is no model API key in `.env`.
+The LLM runs on Gemini through Vertex AI — the OpenAI Agents SDK with
+`LitellmModel("vertex_ai/…")`, authenticated with Application Default
+Credentials. There is no model API key in `.env`.
 
 ```bash
 brew install --cask google-cloud-sdk                    # or any gcloud install
@@ -105,14 +105,15 @@ gcloud auth application-default login                   # writes the ADC file
 gcloud services enable aiplatform.googleapis.com --project <your-project>
 ```
 
-Then set three variables in `.env` (step 3): `GOOGLE_CLOUD_PROJECT`,
-`GOOGLE_CLOUD_LOCATION` (e.g. `us-central1`) and `GEMINI_MODEL` (e.g.
-`gemini-2.5-flash`).
+Then set three variables in `.env` (step 3): `VERTEXAI_PROJECT`,
+`VERTEXAI_LOCATION` (e.g. `us-central1`) and `GEMINI_MODEL`, which is a LiteLLM
+model string and so needs the `vertex_ai/` prefix (default
+`vertex_ai/gemini-2.5-flash`).
 
 Skip any of this and the failure is **quiet**: the greeting is plain TwiML, so the
-call answers and sounds normal, then *every* turn speaks "Sorry, I'm having trouble
-with that right now." with a single `LLM turn failed:` line on stdout. Check stdout
-before suspecting the model.
+call answers and sounds normal, then *every* turn is dead air — the voice channel
+only logs the error, as `Failed to handle prompt:`. Check the log before
+suspecting the model.
 
 ### 3. Environment
 
@@ -190,8 +191,8 @@ author's machine, though: a scratch deploy, not a path you can reproduce.
 
 > **The hosted container has no Vertex credential.** `twl` injects env vars only
 > and ADC is a file on your laptop, so the call answers normally — the greeting is
-> plain TwiML, no LLM — and then *every* turn falls back to "Sorry, I'm having
-> trouble with that right now." Use option A for the LLM legs. See KNOWN-ISSUES #19.
+> plain TwiML, no LLM — and then *every* turn is dead air. Use option A for the LLM
+> legs. See KNOWN-ISSUES #19.
 
 ```bash
 twl deploy                          # builds on the Pi (linux/arm64)

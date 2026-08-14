@@ -1,5 +1,8 @@
 # Design: replace the OpenAI Agents SDK with Gemini on Vertex AI
 
+> **Superseded.** This specifies the hand-rolled `google-genai` design, which was
+> replaced by `LitellmModel` on the OpenAI Agents SDK. Kept only as a record.
+
 **Date:** 2026-08-12
 **Branch:** `gemini-vertex`
 **Status:** approved, not yet implemented
