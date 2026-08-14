@@ -36,16 +36,24 @@ from tac.models.session import ConversationSession
 from tac.models.tac import TACMemoryResponse
 from tac.models.voice import TwiMLOptions
 from tac.server import TACFastAPIServer
-from tac.tools import InjectedToolArg, TACTool, function_tool
+from agents import Agent, Runner, set_tracing_disabled
+from agents.extensions.models.litellm_model import LitellmModel
+
+from tac.tools import InjectedToolArg, TACTool, create_tool, function_tool
 from tac.tools.handoff import create_studio_handoff_tool
 from tac.tools.knowledge import create_knowledge_tool
 
 import events
-import llm
 import web
 
 # override=True: an exported TWILIO_API_KEY would otherwise shadow .env.
 load_dotenv(override=True)
+
+# Tracing would try to upload to OpenAI, which we are not talking to.
+set_tracing_disabled(True)
+
+# LiteLLM routes vertex_ai/* through ADC, so auth is gcloud, not a key.
+GEMINI_MODEL: Final = os.getenv("GEMINI_MODEL", "vertex_ai/gemini-2.5-flash")
 
 # The model-facing tool names. VOICE_INSTRUCTIONS names all three verbatim.
 PAYMENT_LINK_TOOL: Final = "send_payment_link"
@@ -167,10 +175,16 @@ _shared_knowledge_tool: TACTool | None = None
 
 
 async def knowledge_tool() -> TACTool | None:
-    """Build the shared renewal-FAQ tool on first use; None without a knowledge base."""
+    """Build the shared renewal-FAQ tool on first use; None without a knowledge base.
+
+    The search result is re-wrapped because to_openai_agents_sdk_tool() JSON-encodes
+    it with a bare json.dumps(), which raises on the Pydantic chunks the built-in
+    tool returns — the caller then hears dead air. Reusing search.params_json_schema
+    keeps the model-facing parameter exactly `query`. KNOWN-ISSUES #1.
+    """
     global _shared_knowledge_tool
     if _shared_knowledge_tool is None and tac.knowledge_client and tac.config.knowledge_base_id:
-        _shared_knowledge_tool = await create_knowledge_tool(
+        search = await create_knowledge_tool(
             knowledge_client=tac.knowledge_client,
             knowledge_base_id=tac.config.knowledge_base_id,
             name=RENEWAL_FAQ_TOOL,
@@ -179,6 +193,16 @@ async def knowledge_tool() -> TACTool | None:
                 "The input MUST be a question in the form of a string."
             ),
             top_k=3,
+        )
+
+        async def search_renewal_faq(query: str) -> list[dict[str, Any]]:
+            return [chunk.model_dump() for chunk in await search(query=query)]
+
+        _shared_knowledge_tool = create_tool(
+            name=search.name,
+            description=search.description,
+            params_json_schema=search.params_json_schema,
+            implementation=search_renewal_faq,
         )
     return _shared_knowledge_tool
 
@@ -223,15 +247,15 @@ def publish_tool_call(tool_name: str) -> None:
     """Announce a tool call on the live feed.
 
     Args:
-        tool_name: The tool llm.run_turn is invoking; the handoff, which is the
-            moment the softphone is about to ring, gets a second louder line.
+        tool_name: The tool the agent invoked; the handoff, which is the moment
+            the softphone is about to ring, gets a second louder line.
     """
     events.publish("tool", f"Agent used tool: {tool_name}")
     if tool_name == HUMAN_HANDOFF_TOOL:
         events.publish("handoff", "Transferring to a human — your browser will ring!")
 
 
-conversation_history: dict[str, llm.History] = {}
+conversation_history: dict[str, list[Any]] = {}
 
 
 async def handle_message_ready(
@@ -249,15 +273,22 @@ async def handle_message_ready(
     events.publish("caller_said", f"Customer: {user_message}")
 
     on_voice = session.channel == VOICE_CHANNEL
-    reply, history = await llm.run_turn(
-        user_message=user_message,
-        history=conversation_history.get(session.conversation_id, []),
+    agent = Agent(
+        name="Ava",
         instructions=VOICE_INSTRUCTIONS if on_voice else SMS_INSTRUCTIONS,
-        tools=await tools_for(session),
-        on_tool_call=publish_tool_call,
+        tools=[tool.to_openai_agents_sdk_tool() for tool in await tools_for(session)],
+        model=LitellmModel(model=GEMINI_MODEL),
     )
-    conversation_history[session.conversation_id] = history
 
+    history = conversation_history.get(session.conversation_id, [])
+    result = await Runner.run(agent, [*history, {"role": "user", "content": user_message}])
+    conversation_history[session.conversation_id] = result.to_input_list()
+
+    for item in result.new_items:
+        if item.type == "tool_call_item":
+            publish_tool_call(getattr(item.raw_item, "name", "tool"))
+
+    reply = result.final_output_as(str)
     events.publish("agent_said", f"Ava: {reply}")
     return reply
 

@@ -36,8 +36,7 @@ composed from the TAC repo's own `getting_started/examples` (`outbound.py`,
 
 Each item below is a handful of lines, and **every one was added after a real
 observed failure** — not defensively. Deleting any of them reintroduces a bug
-that has already happened once. The `uv.lock` row is the one exception: it guards
-a rebuild moving the SDK surface, which no one has watched happen.
+that has already happened once.
 
 | Thing | Where | Why it must stay |
 |---|---|---|
@@ -45,7 +44,7 @@ a rebuild moving the SDK surface, which no one has watched happen.
 | `action_url` → `/handoff` route | `app.py`, `web.py` | The built-in Studio handoff **cannot work on outbound calls** — Studio answers 400 for `Direction=outbound-api`. Removing this returns the demo to "an application error has occurred". KNOWN-ISSUES #17. |
 | The narrow consent wording in `VOICE_INSTRUCTIONS` | `app.py` | Loose triggers ("agrees", "thanks you") made the agent text the payment link on the caller's first "yes". KNOWN-ISSUES #18. |
 | `DEMO_ALLOWED_NUMBERS` guard | `web.py` `trigger_call` | `POST /api/call` places real billed calls to any number with no auth. On a stable public URL that is an open robocall endpoint. |
-| `uv.lock` tracked in git | repo root | Pins the TAC **git** dependency to one commit. Unpinned, the Pi builds against upstream `main`, so the SDK surface `app.py` is written against can move under a rebuild. |
+| `uv.lock` tracked in git | repo root | Pins the TAC **git** dependency to one commit. Unpinned, the Pi builds against upstream `main` and the #1 workaround breaks — it calls `.model_dump()` on what would become plain dicts. |
 
 ## Layout
 
