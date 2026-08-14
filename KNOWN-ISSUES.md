@@ -8,8 +8,8 @@ came from the move to Gemini on Vertex.
 | | Issues |
 |---|---|
 | 📤 Open — upstream reports drafted, not filed | #1, #17 |
-| 🚧 Open — out of scope, doesn't affect local or ngrok | #19 |
 | ℹ️ Won't fix — documented workaround | #14 |
+| ℹ️ Scoping note — nothing to fix | #19 |
 | ✅ Fixed | #2–#13, #15, #16, #18 |
 
 **"Fixed" means reviewed and exercised**, not formally tested — there are no
@@ -112,8 +112,12 @@ executions proves the rejection happened before any widget, which rules out widg
 config. Replaying the webhook yourself separates the cases: unsigned → 401, signed
 but outbound → 400.
 
+---
+
+## Won't fix
+
 ### 19. The twl deploy can't reach Vertex
-**Not a defect — a scoping note. Nothing to fix.**
+**A scoping note, not a defect. Nothing to fix.**
 
 `twl env set` injects environment variables only, and ADC is a file on the
 laptop, so the container has no Vertex credential and the Gemini path falls back
@@ -123,10 +127,6 @@ That is acceptable rather than broken: the twl dev box is this machine's own
 scratch deploy, not a path anyone else reproduces. Run the Gemini path locally
 against ngrok. Making the container work would mean carrying a long-lived
 service-account secret for no benefit.
-
----
-
-## Won't fix
 
 ### 14. Two deployments collide on the softphone identity
 Running locally and on a hosted URL at the same time works for outbound calls —

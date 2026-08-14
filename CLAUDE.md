@@ -81,7 +81,8 @@ verified 7/7 on the demo's questions), Studio handoff flow, and phone number
 `+1XXXXXXXXXX` in Messaging Service `MG…(your Messaging Service)`. The
 Studio flow exists but is no longer invoked (#17).
 
-**Read `KNOWN-ISSUES.md` before changing code.** #2–#13 and #15–#18 are fixed.
+**Read `KNOWN-ISSUES.md` before changing code.** #2–#13, #15, #16 and #18 are
+fixed; #17 is worked around.
 One item remains, and it isn't code:
 
 - **#1 / #17 upstream** — bug reports for `twilio-agent-connect-python` are
@@ -132,7 +133,7 @@ call or against real Vertex at all.
   it is an unset or empty `GOOGLE_CLOUD_PROJECT`, or missing ADC. Check stdout
   for `LLM turn failed:` first.
 - **This branch is local/ngrok only.** `twl` injects env vars and ADC is a file,
-  so the deployed container has no Vertex credential yet.
+  so the deployed container has no Vertex credential, by choice.
 - **`.gitignore` has `.env.*`** so timestamped credential backups can't be
   committed. Keep `!.env.example`.
 - **ngrok works here only on a temporary IT bypass** (granted 2026-08-12).

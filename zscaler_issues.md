@@ -1,8 +1,8 @@
 # Corporate TLS interception vs. ngrok
 
 Notes from 2026-08-10. Relevant if you're on a managed laptop running Zscaler (or
-any TLS-intercepting proxy) and ngrok won't connect. **If you deploy to a hosted
-URL instead, none of this applies** — see the README's public-domain options.
+any TLS-intercepting proxy) and ngrok won't connect. **On an unmanaged machine none
+of this applies** — ngrok just works.
 
 ## Status: temporarily bypassed, not fixed (2026-08-12)
 
