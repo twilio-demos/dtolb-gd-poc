@@ -109,9 +109,10 @@ async def run_turn(
             )
 
             candidate = response.candidates[0].content if response.candidates else None
-            if candidate is None:
-                # Safety block, or no candidate at all. Appending None here would
-                # corrupt the history for every later turn.
+            if candidate is None or not candidate.parts:
+                # Safety block, no candidate, or a part-less one from a MAX_TOKENS
+                # or RECITATION stop. Appending any of those corrupts the history
+                # for every later turn.
                 return _FALLBACK_REPLY, history
             contents.append(candidate)
 
@@ -136,4 +137,4 @@ async def run_turn(
         print(f"LLM turn failed: {exc}")
         return _FALLBACK_REPLY, history
 
-    return _FALLBACK_REPLY, contents
+    return _FALLBACK_REPLY, history
