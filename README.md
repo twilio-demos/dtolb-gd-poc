@@ -164,7 +164,8 @@ ngrok http 8000                     # put the hostname in .env, no scheme
 uv run python app.py
 ```
 
-**B. The twl dev box** — stable domain, survives restarts.
+**B. The twl dev box** — stable domain, survives restarts. Specific to the
+author's machine, though: a scratch deploy, not a path you can reproduce.
 
 > **The hosted container has no Vertex credential.** `twl` injects env vars only
 > and ADC is a file on your laptop, so the call answers normally — the greeting is

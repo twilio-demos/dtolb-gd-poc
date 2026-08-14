@@ -112,18 +112,17 @@ executions proves the rejection happened before any widget, which rules out widg
 config. Replaying the webhook yourself separates the cases: unsigned → 401, signed
 but outbound → 400.
 
-### 19. The twl deploy has no Vertex credential
-**Open. Out of scope for the Gemini migration; local + ngrok are unaffected.**
+### 19. The twl deploy can't reach Vertex
+**Not a defect — a scoping note. Nothing to fix.**
 
-`twl env set` injects environment variables only — no file secrets, no volume
-mounts — and `.dockerignore` deliberately keeps credentials out of the build
-context. ADC is a file on the laptop, so the container cannot authenticate to
-Vertex.
+`twl env set` injects environment variables only, and ADC is a file on the
+laptop, so the container has no Vertex credential and the Gemini path falls back
+on every turn there.
 
-**Likely fix:** a service-account JSON as a base64 env var, decoded to
-`service_account.Credentials.from_service_account_info(...)` and passed as
-`genai.Client(credentials=...)`. Costs one long-lived secret, which is why it
-wasn't done blind.
+That is acceptable rather than broken: the twl dev box is this machine's own
+scratch deploy, not a path anyone else reproduces. Run the Gemini path locally
+against ngrok. Making the container work would mean carrying a long-lived
+service-account secret for no benefit.
 
 ---
 

@@ -12,9 +12,9 @@ Nothing below was solved — the bypass sidesteps it.
 
 Treat this as borrowed. The grant can be revoked without notice, and it does not
 transfer to any other machine or to a colleague following the README. The `twl`
-dev box stays the durable public path; keep it working. If ngrok starts failing
-again with the x509 error below, assume the bypass lapsed before you debug
-anything else.
+dev box is no fallback — it's this machine's scratch deploy, not a sharing path,
+and it can't reach Vertex (KNOWN-ISSUES #19). If ngrok starts failing again with
+the x509 error below, assume the bypass lapsed before you debug anything else.
 
 ## Symptom
 

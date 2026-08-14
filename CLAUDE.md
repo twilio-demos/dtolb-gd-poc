@@ -82,13 +82,15 @@ verified 7/7 on the demo's questions), Studio handoff flow, and phone number
 Studio flow exists but is no longer invoked (#17).
 
 **Read `KNOWN-ISSUES.md` before changing code.** #2–#13 and #15–#18 are fixed.
-Two items remain:
+One item remains, and it isn't code:
 
 - **#1 / #17 upstream** — bug reports for `twilio-agent-connect-python` are
   drafted (serialization in #1; Studio handoff being unusable on outbound calls
   in #17) but **not filed**. Filing is public; ask first.
-- **#19** — the twl deploy has no Vertex credential, so it can't run the Gemini
-  path. Local and ngrok are unaffected.
+
+**#19 is a scoping note, not a task.** The twl deploy can't reach Vertex, which
+is fine — it is this machine's scratch deploy, never a sharing path. Run the
+Gemini path locally against ngrok.
 
 **Verified end to end on real traffic — on the OpenAI runtime:** the outbound
 call, the LLM turns, the knowledge tool, the human handoff to the browser
@@ -136,8 +138,8 @@ call or against real Vertex at all.
 - **ngrok works here only on a temporary IT bypass** (granted 2026-08-12).
   Corporate TLS interception otherwise breaks it, and the grant can be revoked
   without notice — if ngrok starts failing with an x509 error, suspect that
-  first. See `zscaler_issues.md`. The twl deploy remains the durable public path
-  and the one a colleague can reproduce; don't let it rot.
+  first. See `zscaler_issues.md`. There is no fallback if it lapses — the twl dev
+  box is this machine's own scratch deploy, not something a colleague reproduces.
 - **After `twl deploy`, every route 404s then 502s for ~10-25s** while the proxy
   re-registers, even though the app logs a clean startup. Poll `GET /` for 200.
 - `timeout` is not a stock macOS binary; use `curl -m N`.

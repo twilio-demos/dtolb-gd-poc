@@ -42,9 +42,9 @@ it; all three 30034 failures looked like successes on the dashboard.
 
 **ngrok works here only on a temporary IT bypass** (granted 2026-08-12) that can be
 revoked without notice. If it starts failing with an x509 error, suspect the bypass
-lapsed before debugging anything else — `zscaler_issues.md` has the detail. The twl
-deploy stays the durable path and the one a colleague can reproduce, but it can't
-authenticate to Vertex yet (KNOWN-ISSUES #19), so the Gemini path runs locally only.
+lapsed before debugging anything else — `zscaler_issues.md` has the detail. There is
+no fallback: the twl dev box is this machine's scratch deploy, not a path a colleague
+reproduces, and it can't reach Vertex anyway (KNOWN-ISSUES #19). Gemini runs locally.
 
 A new ngrok URL needs an `.env` edit **and** a restart: `action_url` is built at
 import time.
