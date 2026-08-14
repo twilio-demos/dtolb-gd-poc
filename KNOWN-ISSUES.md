@@ -289,8 +289,8 @@ websocket.
 
 | # | Issue | Fix |
 |---|---|---|
-| 2 | A missing Studio flow SID made `create_studio_handoff_tool` raise on every utterance; the voice channel swallows it, so the whole agent went silent | Guard on the flow SID and degrade to "no handoff tool" (`get_handoff_tool`) |
-| 3 | `configure_injection()` mutates a module-level tool in place and returns `self`, so a shared instance leaks one caller's session into another's turn | `create_send_payment_link_tool()` builds a fresh tool per message |
+| 2 | A missing Studio flow SID made `create_studio_handoff_tool` raise on every utterance; the voice channel swallows it, so the whole agent went silent | `handoff_tool_for()` catches the `ValueError` and degrades to "no handoff tool" |
+| 3 | `configure_injection()` mutates a module-level tool in place and returns `self`, so a shared instance leaks one caller's session into another's turn | `payment_link_tool_for()` builds a fresh tool per message |
 | 4 | A failed "Call me" was invisible: the server publishes SSE only after Twilio accepts the call | `static/index.html` checks `res.ok` and renders an error line |
 | 6 | `studio-flow.json` lacked `caller_id`, which console-built widgets export | Added. Since moot — Studio is no longer in the handoff path (#17) |
 | 7 | `TACFastAPIServer` registers its routes in the constructor, which only ran under `__main__`, so `uvicorn app:app` served the page with no `/twiml` or websocket | Constructed at module scope; only `start()` stays under the guard |
