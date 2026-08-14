@@ -9,8 +9,6 @@ dependencies = [
     # Gemini on Vertex AI -- the LLM runtime. llm.py bridges TAC tools to it via
     # TACTool.params_json_schema; needs >=2.17.0 for parameters_json_schema.
     "google-genai>=2.17.0",
-    # OpenAI Agents SDK -- removed in a later commit on this branch
-    "openai-agents>=0.1.0",
     # Twilio helper lib -- used only for the Voice JS SDK access token (browser softphone)
     "twilio>=9.8.3",
     "python-dotenv>=1.0.0",

@@ -18,7 +18,6 @@ import os
 import uuid
 from typing import Annotated, Any
 
-from agents import Agent, Runner, set_tracing_disabled
 from dotenv import load_dotenv
 from fastapi import FastAPI
 
@@ -34,16 +33,16 @@ from tac.models.session import ConversationSession
 from tac.models.tac import TACMemoryResponse
 from tac.models.voice import TwiMLOptions
 from tac.server import TACFastAPIServer
-from tac.tools import InjectedToolArg, TACTool, create_tool, function_tool
+from tac.tools import InjectedToolArg, TACTool, function_tool
 from tac.tools.handoff import create_studio_handoff_tool
 from tac.tools.knowledge import create_knowledge_tool
 
 import events
+import llm
 import web
 
 # override=True: an exported TWILIO_API_KEY would otherwise shadow .env.
 load_dotenv(override=True)
-set_tracing_disabled(True)
 
 tac = TAC(config=TACConfig.from_env())
 
@@ -164,19 +163,13 @@ def create_send_payment_link_tool(session: ConversationSession) -> TACTool:
 
 
 # Built once and cached; the knowledge tool takes no per-conversation session.
-#
-# The wrapper works around an upstream SDK bug: search returns Pydantic models,
-# but to_openai_agents_sdk_tool()'s on_invoke encodes results with a bare
-# json.dumps(), raising TypeError that the voice channel only logs — the caller
-# hears dead air. Reusing search.params_json_schema keeps the LLM-facing
-# parameter exactly `query`. Remove once on_invoke handles Pydantic.
 _knowledge_tool: TACTool | None = None
 
 
 async def get_knowledge_tool() -> TACTool | None:
     global _knowledge_tool
     if _knowledge_tool is None and tac.knowledge_client and tac.config.knowledge_base_id:
-        search = await create_knowledge_tool(
+        _knowledge_tool = await create_knowledge_tool(
             knowledge_client=tac.knowledge_client,
             knowledge_base_id=tac.config.knowledge_base_id,
             name="search_renewal_faq",
@@ -185,17 +178,6 @@ async def get_knowledge_tool() -> TACTool | None:
                 "The input MUST be a question in the form of a string."
             ),
             top_k=3,
-        )
-
-        async def search_renewal_faq(query: str) -> list[dict[str, Any]]:
-            chunks = await search(query=query)
-            return [chunk.model_dump() for chunk in chunks]
-
-        _knowledge_tool = create_tool(
-            name=search.name,
-            description=search.description,
-            params_json_schema=search.params_json_schema,
-            implementation=search_renewal_faq,
         )
     return _knowledge_tool
 
@@ -228,9 +210,9 @@ def get_handoff_tool(context: ConversationSession) -> TACTool | None:
 
 # --- LLM loop --------------------------------------------------------------
 # TAC calls this with each transcribed utterance (voice) or inbound SMS body;
-# the string we return is spoken or texted back.
+# the string we return is spoken or texted back. llm.py holds the Gemini side.
 
-conversation_history: dict[str, list[Any]] = {}
+conversation_history: dict[str, llm.History] = {}
 
 
 async def handle_message_ready(
@@ -245,36 +227,32 @@ async def handle_message_ready(
 
     on_voice = context.channel == "VOICE"
 
-    tools: list[Any] = []
+    tools: list[TACTool] = []
     if on_voice:
         # Voice only: an SMS replier already has the link, and handoff has no
         # messaging path.
-        tools.append(create_send_payment_link_tool(context).to_openai_agents_sdk_tool())
+        tools.append(create_send_payment_link_tool(context))
         handoff_tool = get_handoff_tool(context)
         if handoff_tool:
-            tools.append(handoff_tool.to_openai_agents_sdk_tool())
+            tools.append(handoff_tool)
     knowledge_tool = await get_knowledge_tool()
     if knowledge_tool:
-        tools.append(knowledge_tool.to_openai_agents_sdk_tool())
+        tools.append(knowledge_tool)
 
-    agent = Agent(
-        name="Ava",
+    def on_tool_call(tool_name: str) -> None:
+        events.publish("tool", f"Agent used tool: {tool_name}")
+        if tool_name == "connect_to_human_agent":
+            events.publish("handoff", "Transferring to a human — your browser will ring!")
+
+    reply, history = await llm.run_turn(
+        user_message=user_message,
+        history=conversation_history.get(context.conversation_id, []),
         instructions=VOICE_INSTRUCTIONS if on_voice else SMS_INSTRUCTIONS,
         tools=tools,
+        on_tool_call=on_tool_call,
     )
+    conversation_history[context.conversation_id] = history
 
-    history = conversation_history.get(context.conversation_id, [])
-    result = await Runner.run(agent, history + [{"role": "user", "content": user_message}])
-    conversation_history[context.conversation_id] = result.to_input_list()
-
-    for item in result.new_items:
-        if item.type == "tool_call_item":
-            tool_name = getattr(item.raw_item, "name", "tool")
-            events.publish("tool", f"Agent used tool: {tool_name}")
-            if tool_name == "connect_to_human_agent":
-                events.publish("handoff", "Transferring to a human — your browser will ring!")
-
-    reply = result.final_output_as(str)
     events.publish("agent_said", f"Ava: {reply}")
     return reply
 
