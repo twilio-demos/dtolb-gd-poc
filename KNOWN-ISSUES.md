@@ -124,9 +124,13 @@ laptop, so the container has no Vertex credential and the Gemini path falls back
 on every turn there.
 
 That is acceptable rather than broken: the twl dev box is this machine's own
-scratch deploy, not a path anyone else reproduces. Run the Gemini path locally
-against ngrok. Making the container work would mean carrying a long-lived
-service-account secret for no benefit.
+scratch deploy, not a path anyone else reproduces. Making the container work would
+mean carrying a long-lived service-account secret for no benefit.
+
+Local + ngrok is the intended target, and is itself unexercised — this machine has
+no `gcloud` and no ADC file. Running Gemini anywhere needs `gcloud auth
+application-default login` plus `GOOGLE_CLOUD_PROJECT`, `GOOGLE_CLOUD_LOCATION` and
+`GEMINI_MODEL` in `.env` first.
 
 ### 14. Two deployments collide on the softphone identity
 Running locally and on a hosted URL at the same time works for outbound calls —

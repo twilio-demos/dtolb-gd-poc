@@ -22,12 +22,13 @@ where the project stands, what works, and what will bite you.
 | Landing page + live SSE feed | ✅ Working |
 
 Every leg has run against live Twilio — on the OpenAI runtime. The LLM now runs on
-Gemini via Vertex AI (`llm.py`), which has not been on a live call, so read those
-✅s as earned on the previous runtime. The SMS leg was the last holdout: the
-sending number sat in a Messaging Service whose 10DLC campaign never verified, so
-Twilio rejected US-bound SMS with **30034 ("Message from an Unregistered
-Number")**. Moving the number into an already-approved campaign fixed it —
-KNOWN-ISSUES #13 has the specifics and the two traps.
+Gemini via Vertex AI (`llm.py`), which has not been on a live call, so read the
+**call, the handoff and the SMS** ✅s as earned on the previous runtime; the
+knowledge base's 7/7 and the live feed don't route through a model turn. The SMS
+leg was the last holdout: the sending number sat in a Messaging Service whose
+10DLC campaign never verified, so Twilio rejected US-bound SMS with **30034
+("Message from an Unregistered Number")**. Moving the number into an approved
+campaign fixed it — KNOWN-ISSUES #13 has the specifics and the two traps.
 
 **Check SMS delivery in the Messages log, not the live feed.** The feed publishes
 `sms_sent` when TAC accepts the message, which is before Twilio decides to reject
@@ -44,7 +45,8 @@ it; all three 30034 failures looked like successes on the dashboard.
 revoked without notice. If it starts failing with an x509 error, suspect the bypass
 lapsed before debugging anything else — `zscaler_issues.md` has the detail. There is
 no fallback: the twl dev box is this machine's scratch deploy, not a path a colleague
-reproduces, and it can't reach Vertex anyway (KNOWN-ISSUES #19). Gemini runs locally.
+reproduces, and it can't reach Vertex anyway (KNOWN-ISSUES #19). Run Gemini locally
+against ngrok.
 
 A new ngrok URL needs an `.env` edit **and** a restart: `action_url` is built at
 import time.
@@ -152,8 +154,9 @@ and `llm.py` are written against can move.
 ## Conventions
 
 - **Don't production-harden this.** No auth, persistence, retries, or
-  multi-user handling. In-memory dicts are deliberate. Three exceptions exist and
-  are listed in `CLAUDE.md` — each was added after an observed failure.
+  multi-user handling. In-memory dicts are deliberate. Five exceptions exist and
+  are listed in `CLAUDE.md` — all but the `uv.lock` pin were added after an
+  observed failure.
 - **Comments are sparse on purpose.** Explain the non-obvious *why*; leave
   history in `KNOWN-ISSUES.md`.
 - **Never run the demo end to end without asking.** It places real calls and

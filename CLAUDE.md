@@ -32,11 +32,13 @@ composed from the TAC repo's own `getting_started/examples` (`outbound.py`,
   adapter, so `llm.py` is the bridge: `TACTool.params_json_schema` becomes a
   `FunctionDeclaration`, and calls dispatch through `await tool(**args)`.
 
-### Three things that look like hardening but are NOT — do not remove
+### Five things that look like hardening but are NOT — do not remove
 
 Each item below is a handful of lines, and **every one was added after a real
 observed failure** — not defensively. Deleting any of them reintroduces a bug
-that has already happened once:
+that has already happened once. The `uv.lock` row is the one exception: the
+failure it was added for is gone with the OpenAI path, and the pin now guards a
+hypothetical.
 
 | Thing | Where | Why it must stay |
 |---|---|---|
@@ -62,7 +64,7 @@ that has already happened once:
 | `KNOWN-ISSUES.md` | 19 findings, current status per issue |
 | `zscaler_issues.md` | ngrok vs. corporate TLS interception; partial workaround |
 | `docs/2026-08-10-tac-payment-reminder-design.md` | Approved design + decisions |
-| `README.md` | Setup walkthrough (provisioning, both public-domain options) |
+| `README.md` | Setup walkthrough (provisioning, Vertex/ADC, ngrok; the twl box flagged as author-only) |
 
 ## Current state (2026-08-14)
 

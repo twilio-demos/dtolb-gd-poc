@@ -110,14 +110,17 @@ async def run_turn(
 
             candidate = response.candidates[0].content if response.candidates else None
             if candidate is None or not candidate.parts:
-                # Safety block, no candidate, or a part-less one from a MAX_TOKENS
-                # or RECITATION stop. Appending any of those corrupts the history
-                # for every later turn.
+                # Safety block, no candidate, or a part-less MAX_TOKENS/RECITATION
+                # stop: with no model answer to close the turn, `contents` would end
+                # on a tool response, so hand back the pre-turn history instead. That
+                # drops any tool round that already ran — an SMS can be out with no
+                # record of it, leaving VOICE_INSTRUCTIONS' "at most once per call"
+                # nothing to act on.
                 return _FALLBACK_REPLY, history
             contents.append(candidate)
 
             if not response.function_calls:
-                return response.text or "", contents
+                return response.text or _FALLBACK_REPLY, contents
 
             parts = []
             for call in response.function_calls:
@@ -137,4 +140,6 @@ async def run_turn(
         print(f"LLM turn failed: {exc}")
         return _FALLBACK_REPLY, history
 
+    # Round budget spent with no answer — history is discarded for the same reason,
+    # and at the same cost, as the part-less case above.
     return _FALLBACK_REPLY, history

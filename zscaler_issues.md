@@ -74,8 +74,9 @@ distinguished until an authtoken is added**, so add one and retry before drawing
 conclusions.
 
 If `session closed` persists with a valid authtoken, the tunnel protocol itself is
-being broken. The options are a proxy bypass for `*.ngrok-agent.com` and
-`*.ngrok.io`, or skipping ngrok and deploying to a hosted URL.
+being broken. The only way out is a proxy bypass for `*.ngrok-agent.com` and
+`*.ngrok.io` — hosting elsewhere is not one, for the reasons in the status note
+above.
 
 Note `root_cas: host` only changes which trust store ngrok validates against; it
 does not make ngrok trust a pinned CA. Prefer asking IT for a bypass over relying

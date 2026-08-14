@@ -55,9 +55,10 @@ route — which dials the `browser-agent` client, ringing the landing page.
 ## Setup (one time, ~15 minutes)
 
 Prereqs: Python 3.10+, [uv](https://docs.astral.sh/uv/), a Twilio account with a
-voice+SMS-capable phone number, a Google Cloud project with the Vertex AI API
-enabled (`gcloud auth application-default login`), and **one way to be publicly
-reachable** — either [ngrok](https://ngrok.com) or the `twl` dev box (see
+voice+SMS-capable phone number, a Google Cloud project you can enable the Vertex AI
+API on (step 2), and **one way to be publicly reachable** —
+[ngrok](https://ngrok.com) in practice; the `twl` dev box is the author's own
+scratch deploy rather than something you can reproduce (see
 [Two ways to be publicly reachable](#two-ways-to-be-publicly-reachable)).
 
 ### 1. TAC services (Conversation Memory + Configuration)
@@ -93,13 +94,33 @@ Two deliberate choices there:
 - **`memoryExtractionEnabled: false`** — both channels run the default
   `memory_mode="never"`, so extraction would be cost with no demo benefit.
 
-### 2. Environment
+### 2. Google Cloud (Vertex AI)
+
+The LLM runs on Gemini through Vertex AI, authenticated with Application Default
+Credentials — there is no model API key in `.env`.
+
+```bash
+brew install --cask google-cloud-sdk                    # or any gcloud install
+gcloud auth application-default login                   # writes the ADC file
+gcloud services enable aiplatform.googleapis.com --project <your-project>
+```
+
+Then set three variables in `.env` (step 3): `GOOGLE_CLOUD_PROJECT`,
+`GOOGLE_CLOUD_LOCATION` (e.g. `us-central1`) and `GEMINI_MODEL` (e.g.
+`gemini-2.5-flash`).
+
+Skip any of this and the failure is **quiet**: the greeting is plain TwiML, so the
+call answers and sounds normal, then *every* turn speaks "Sorry, I'm having trouble
+with that right now." with a single `LLM turn failed:` line on stdout. Check stdout
+before suspecting the model.
+
+### 3. Environment
 
 ```bash
 cp .env.example .env   # then fill it in
 ```
 
-### 3. A public domain
+### 4. A public domain
 
 TAC needs a public HTTPS domain for Twilio's webhooks and the ConversationRelay
 `wss://` socket. Put the bare hostname (no scheme, no trailing slash) in `.env`
@@ -107,7 +128,7 @@ as `TWILIO_VOICE_PUBLIC_DOMAIN` — it's also the domain in the SMS payment link
 See [Two ways to be publicly reachable](#two-ways-to-be-publicly-reachable) for
 ngrok vs. the twl dev box, and the extra env var the latter requires.
 
-### 4. Studio flow (optional — NOT used for handoff)
+### 5. Studio flow (optional — NOT used for handoff)
 
 > Handoff no longer goes through Studio (see the note under
 > [How it works](#how-it-works) and KNOWN-ISSUES #17) — `/handoff` serves the
@@ -127,7 +148,7 @@ The equivalent gate now lives in `/handoff`, which dials only when the request
 carries `HandoffData` and returns `<Hangup/>` otherwise — Twilio hits that URL
 whenever *any* relay session ends, not just on a handoff.
 
-### 5. Knowledge base (renewal FAQ)
+### 6. Knowledge base (renewal FAQ)
 
 1. Twilio Console → **Enterprise Knowledge** → create a knowledge base
    (name: *Owl Shoes Renewal FAQ*).
