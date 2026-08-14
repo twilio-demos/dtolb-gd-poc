@@ -300,16 +300,14 @@ websocket.
 
 ## SDK behavior the code is shaped around
 
-Not findings — just vendor behavior that explains why the source looks the way it
-does. Kept here so the modules themselves stay readable.
+Not findings — vendor behavior that explains why the source looks the way it does.
+The `action_url` route, the per-conversation tool, the handoff degradation and the
+knowledge-tool wrapper each have their own issue above: #17, #3, #2 and #1. What
+is left is the behavior no issue covers:
 
 | Where | Behavior |
 |---|---|
-| `app.py` `action_url` | Studio answers 400 for `Direction=outbound-api`, so TAC's built-in Studio handoff can't serve an outbound call. An explicit `default_twiml_options.action_url` outranks `studio_handoff_flow_sid`, so the relay exits to `/handoff` (#17). |
-| `app.py` `payment_link_tool_for` | `configure_injection()` mutates the tool in place and returns `self`, so a tool is built per conversation. The knowledge tool takes no session and is built once (#3). |
-| `app.py` `handoff_tool_for` | `create_studio_handoff_tool` raises `ValueError` without a flow SID, Orchestrator and memory store. It degrades to `None` because the voice channel only *logs* exceptions from the message callback — a raise there is dead air on every utterance (#2). |
 | `app.py` `on_call_status` | Registering the handler is the side effect that makes TAC attach the status callback URL; Twilio then reports only `completed` unless `status_callback_event` lists the earlier states out. |
-| `app.py` `knowledge_tool` | `to_openai_agents_sdk_tool()` encodes results with a bare `json.dumps()`, which raises on the Pydantic chunks the built-in knowledge tool returns, so the wrapper flattens them with `model_dump()` (#1). |
 | `web.py` `/handoff` | Twilio requests the `action_url` whenever a ConversationRelay session ends, not only on a handoff, so it dials the browser only when the POST carries `HandoffData`. `callerId` must be a number this account owns. |
 | `web.py` `/token` | `incoming_allow` on the Voice grant is what lets `/handoff`'s `<Dial><Client>` ring the page. |
 | `events.py` `publish` | `event_type` values are a contract with `static/index.html`, which styles each feed line by them. |
