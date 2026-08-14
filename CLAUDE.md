@@ -122,13 +122,13 @@ call or against real Vertex at all.
   after its import block, so reading `GOOGLE_CLOUD_PROJECT` at module scope
   there would see an empty env. Vertex auth is ADC — `gcloud auth
   application-default login`, no key in `.env`.
-- **Missing Vertex config fails quietly and misleadingly.** `_get_client()`
-  raises `KeyError` inside `run_turn`'s broad `except`, and the
+- **Missing Vertex config fails quietly and misleadingly.** It raises out of
+  `_get_client()` into `run_turn`'s broad `except`, and the
   `welcome_greeting` is plain TwiML that needs no LLM — so the call answers and
   sounds completely normal, then *every* turn speaks "Sorry, I'm having trouble
   with that right now." with one line on stdout. It presents as a broken model;
-  it is an unset `GOOGLE_CLOUD_PROJECT` or missing ADC. Check stdout for
-  `LLM turn failed:` first.
+  it is an unset or empty `GOOGLE_CLOUD_PROJECT`, or missing ADC. Check stdout
+  for `LLM turn failed:` first.
 - **This branch is local/ngrok only.** `twl` injects env vars and ADC is a file,
   so the deployed container has no Vertex credential yet.
 - **`.gitignore` has `.env.*`** so timestamped credential backups can't be

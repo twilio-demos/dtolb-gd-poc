@@ -152,9 +152,10 @@ uv run python app.py
 ### Two ways to be publicly reachable
 
 TAC needs a public HTTPS domain for Twilio's webhooks and the ConversationRelay
-`wss://` socket. Both options below work, and they can run at the same time —
-`TWILIO_VOICE_PUBLIC_DOMAIN` is read **per call** to build the websocket URL and
-the SMS payment link, so each instance uses its own domain.
+`wss://` socket. Both options below serve that socket and the webhooks, and they
+can run at the same time — `TWILIO_VOICE_PUBLIC_DOMAIN` is read **per call** to
+build the websocket URL and the SMS payment link, so each instance uses its own
+domain.
 
 **A. Local + ngrok** — fast iteration, domain changes on every restart.
 
@@ -164,6 +165,11 @@ uv run python app.py
 ```
 
 **B. The twl dev box** — stable domain, survives restarts.
+
+> **The hosted container has no Vertex credential.** `twl` injects env vars only
+> and ADC is a file on your laptop, so the call answers normally — the greeting is
+> plain TwiML, no LLM — and then *every* turn falls back to "Sorry, I'm having
+> trouble with that right now." Use option A for the LLM legs. See KNOWN-ISSUES #19.
 
 ```bash
 twl deploy                          # builds on the Pi (linux/arm64)
