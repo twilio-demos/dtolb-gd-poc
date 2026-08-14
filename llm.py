@@ -12,9 +12,11 @@ so the caller publishes its own events.
 
 import os
 from collections.abc import Callable
+from typing import Final
 
 from google import genai
 from google.genai import types
+from pydantic import BaseModel
 
 from tac.tools import TACTool
 
@@ -22,7 +24,7 @@ History = list[types.Content]
 
 # A model that only ever calls tools never speaks, and the voice channel gives
 # the caller silence while it waits.
-MAX_TOOL_ROUNDS = 5
+MAX_TOOL_ROUNDS: Final = 5
 
 _FALLBACK_REPLY = "Sorry, I'm having trouble with that right now."
 
@@ -30,10 +32,12 @@ _client: genai.Client | None = None
 
 
 def _get_client() -> genai.Client:
-    """Vertex client, built on first use.
+    """Return the Vertex client, building it on first use.
 
-    Not at import: app.py calls load_dotenv() *after* its import block, so
-    module-level env reads here would run before .env exists.
+    Returns:
+        A process-wide genai.Client. Not built at import: app.py calls
+        load_dotenv() after its import block, so reading the env any earlier
+        would read it before .env is loaded.
     """
     global _client
     if _client is None:
@@ -45,42 +49,67 @@ def _get_client() -> genai.Client:
     return _client
 
 
-def _model() -> str:
-    return os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+def _model_facing_parameters(tool: TACTool) -> dict[str, object] | None:
+    """Return the parameter schema Gemini should see for one tool.
+
+    Args:
+        tool: The tool being declared.
+
+    Returns:
+        The tool's JSON schema, or None when every parameter is injected and the
+        model has nothing to fill in — Vertex rejects an OBJECT schema whose
+        properties are empty.
+    """
+    schema = tool.params_json_schema
+    return schema if schema.get("properties") else None
 
 
 def _declare(tools: list[TACTool]) -> types.Tool:
     """Convert TAC tools into one Gemini tool declaration.
 
-    A tool whose every parameter is injected declares no parameters at all:
-    Vertex rejects an OBJECT schema with empty properties.
+    Args:
+        tools: The tools this turn may call.
+
+    Returns:
+        A single types.Tool carrying one FunctionDeclaration per tool.
     """
-    declarations = []
-    for tool in tools:
-        schema = tool.params_json_schema
-        declarations.append(
+    return types.Tool(
+        function_declarations=[
             types.FunctionDeclaration(
                 name=tool.name,
                 description=tool.description,
-                parameters_json_schema=schema if schema.get("properties") else None,
+                parameters_json_schema=_model_facing_parameters(tool),
             )
-        )
-    return types.Tool(function_declarations=declarations)
+            for tool in tools
+        ]
+    )
+
+
+def _jsonable(value: object) -> object:
+    """Flatten one tool result into something Gemini can serialize.
+
+    Args:
+        value: A tool's return value, or one element of it.
+
+    Returns:
+        value.model_dump() for Pydantic models — TAC's knowledge tool returns
+        them and Gemini cannot serialize them — and value untouched otherwise.
+    """
+    return value.model_dump() if isinstance(value, BaseModel) else value
 
 
 def _as_response(result: object) -> dict[str, object]:
     """Wrap a tool's return value the way Gemini expects.
 
-    Pydantic models are flattened first — the knowledge tool returns them and
-    they are not JSON-serializable. Duck-typed, so plain dicts pass through.
+    Args:
+        result: Whatever the TACTool returned.
+
+    Returns:
+        The payload for types.Part.from_function_response.
     """
     if isinstance(result, list):
-        result = [
-            item.model_dump() if hasattr(item, "model_dump") else item for item in result
-        ]
-    elif hasattr(result, "model_dump"):
-        result = result.model_dump()  # type: ignore[attr-defined]
-    return {"result": result}
+        return {"result": [_jsonable(item) for item in result]}
+    return {"result": _jsonable(result)}
 
 
 async def run_turn(
@@ -91,19 +120,28 @@ async def run_turn(
     tools: list[TACTool],
     on_tool_call: Callable[[str], None],
 ) -> tuple[str, History]:
-    """Run one turn to completion, executing tool calls. Returns (reply, history).
+    """Run one turn to completion, executing whatever tools the model calls.
 
-    Tool results go back with role="user", matching the Gemini SDK's own
-    automatic-function-calling path. Thinking is off because 2.5 Flash reasons
-    before answering by default, which is dead air on a call. Failures are caught
-    and reported as text: the voice channel only logs exceptions raised from the
-    message callback, so raising here is silence on a live call.
+    Thinking is off because 2.5 Flash reasons before answering by default, which
+    is dead air on a call. Failures are caught and answered as text: TAC's voice
+    channel only logs exceptions raised from the message callback, so raising here
+    would be silence on a live call.
 
-    Both failure exits — a part-less or blocked candidate, and a spent round
-    budget — return the pre-turn history, because contents would otherwise end on
-    a tool response with no model answer. That drops any tool round that already
-    ran: a sent SMS can leave no record, so VOICE_INSTRUCTIONS' "at most once per
-    call" has nothing to act on.
+    Args:
+        user_message: What the customer just said or texted.
+        history: Contents from earlier turns of this conversation.
+        instructions: The system instruction for this channel.
+        tools: The tools the model may call. Their results go back with
+            role="user", matching the Gemini SDK's own automatic
+            function-calling path.
+        on_tool_call: Notified with each tool name as it is invoked, so the
+            caller can publish its own events.
+
+    Returns:
+        The reply to speak or text, and the history to keep. Every failure exit
+        returns the *pre-turn* history, because contents would otherwise end on a
+        tool response with no model answer — which also means a tool round that
+        already ran (a sent SMS) leaves no record.
     """
     by_name = {tool.name: tool for tool in tools}
     contents: History = [
@@ -115,11 +153,12 @@ async def run_turn(
         tools=[_declare(tools)] if tools else None,
         thinking_config=types.ThinkingConfig(thinking_budget=0),
     )
+    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
     try:
         for _ in range(MAX_TOOL_ROUNDS):
             response = await _get_client().aio.models.generate_content(
-                model=_model(), contents=contents, config=config
+                model=model, contents=contents, config=config
             )
 
             candidate = response.candidates[0].content if response.candidates else None

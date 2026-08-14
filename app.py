@@ -16,7 +16,7 @@ Run:  uv run python app.py   (see README for the one-time Twilio setup)
 
 import os
 import uuid
-from typing import Annotated, Any
+from typing import Annotated, Any, Final
 
 from dotenv import load_dotenv
 from fastapi import FastAPI
@@ -43,6 +43,13 @@ import web
 
 # override=True: an exported TWILIO_API_KEY would otherwise shadow .env.
 load_dotenv(override=True)
+
+# The model-facing tool names. VOICE_INSTRUCTIONS names all three verbatim.
+PAYMENT_LINK_TOOL: Final = "send_payment_link"
+RENEWAL_FAQ_TOOL: Final = "search_renewal_faq"
+HUMAN_HANDOFF_TOOL: Final = "connect_to_human_agent"
+
+VOICE_CHANNEL: Final = "VOICE"
 
 tac = TAC(config=TACConfig.from_env())
 
@@ -109,6 +116,21 @@ SMS_INSTRUCTIONS = (
 )
 
 
+def _mint_tracked_link(to_number: str) -> str:
+    """Register a payment URL whose click the live feed can attribute.
+
+    Args:
+        to_number: The customer about to be texted, remembered so that GET
+            /pay/{link_id} can name them when the link is opened.
+
+    Returns:
+        The URL to text, on this deployment's public domain.
+    """
+    link_id = uuid.uuid4().hex[:8]
+    web.PAYMENT_LINKS[link_id] = web.PaymentLink(to=to_number)
+    return f"https://{tac.config.voice_public_domain}/pay/{link_id}"
+
+
 async def _send_payment_link(
     session: Annotated[ConversationSession, InjectedToolArg],
 ) -> str:
@@ -121,10 +143,7 @@ async def _send_payment_link(
     if not to_number:
         return "Could not determine the customer's phone number."
 
-    link_id = uuid.uuid4().hex[:8]
-    web.PAYMENT_LINKS[link_id] = {"to": to_number, "clicked": False}
-    link = f"https://{tac.config.voice_public_domain}/pay/{link_id}"
-
+    link = _mint_tracked_link(to_number)
     await sms_channel.initiate_outbound_conversation(
         InitiateMessagingConversationOptions(
             to=to_number,
@@ -139,59 +158,69 @@ async def _send_payment_link(
     return "Payment link sent by text message."
 
 
-def create_send_payment_link_tool(session: ConversationSession) -> TACTool:
-    """Build a send_payment_link tool bound to one conversation.
+def payment_link_tool_for(session: ConversationSession) -> TACTool:
+    """Build this conversation's own copy of the send_payment_link tool.
 
-    A factory rather than a module-level tool: configure_injection() mutates in
-    place and returns self, so a shared instance would leak one caller's session
-    into another's turn.
+    One per session rather than one shared tool: configure_injection() mutates
+    the tool in place and returns self, so sharing would leak this session into
+    the next caller's turn.
 
-    function_tool() derives the model-facing schema from the wrapped function's
-    signature and docstring and hides InjectedToolArg parameters from the model;
-    name= is explicit because it would otherwise expose the underscored function
-    name, which no longer matches VOICE_INSTRUCTIONS.
+    Args:
+        session: The conversation whose customer gets the text; injected into
+            _send_payment_link.
+
+    Returns:
+        A tool the model sees as PAYMENT_LINK_TOOL, taking no arguments.
     """
-    return function_tool(name="send_payment_link")(_send_payment_link).configure_injection(
-        session=session
-    )
+    tool = function_tool(name=PAYMENT_LINK_TOOL)(_send_payment_link)
+    return tool.configure_injection(session=session)
 
 
-_knowledge_tool: TACTool | None = None
+_shared_knowledge_tool: TACTool | None = None
 
 
-async def get_knowledge_tool() -> TACTool | None:
-    """Build the knowledge tool once; it takes no per-conversation session."""
-    global _knowledge_tool
-    if _knowledge_tool is None and tac.knowledge_client and tac.config.knowledge_base_id:
-        _knowledge_tool = await create_knowledge_tool(
+async def knowledge_tool() -> TACTool | None:
+    """Build the renewal-FAQ tool on first use and share it from then on.
+
+    Returns:
+        A tool the model sees as RENEWAL_FAQ_TOOL, or None when this deployment
+        has no knowledge base. Shared rather than per-session because Enterprise
+        Knowledge search needs no conversation context.
+    """
+    global _shared_knowledge_tool
+    if _shared_knowledge_tool is None and tac.knowledge_client and tac.config.knowledge_base_id:
+        _shared_knowledge_tool = await create_knowledge_tool(
             knowledge_client=tac.knowledge_client,
             knowledge_base_id=tac.config.knowledge_base_id,
-            name="search_renewal_faq",
+            name=RENEWAL_FAQ_TOOL,
             description=(
                 "Search Owl Shoes' renewal and billing FAQ. "
                 "The input MUST be a question in the form of a string."
             ),
             top_k=3,
         )
-    return _knowledge_tool
+    return _shared_knowledge_tool
 
 
-def get_handoff_tool(context: ConversationSession) -> TACTool | None:
-    """Build the handoff tool, or None if handoff isn't configured.
+def handoff_tool_for(session: ConversationSession) -> TACTool | None:
+    """Build this conversation's own copy of the connect_to_human_agent tool.
 
-    create_studio_handoff_tool raises without a flow SID, Conversation
-    Orchestrator and a memory store. The voice channel only logs exceptions from
-    the message callback, so letting it raise means dead air on every utterance;
-    degrading to "no handoff tool" keeps the rest of the demo working.
+    Args:
+        session: The conversation Studio is being asked to take over.
+
+    Returns:
+        A tool the model sees as HUMAN_HANDOFF_TOOL, or None when handoff is
+        unavailable: create_studio_handoff_tool wants a Studio flow SID,
+        Conversation Orchestrator and a memory store, and letting it raise would
+        be dead air on every utterance, because TAC's voice channel only logs
+        exceptions raised from the message callback.
     """
-    if not tac.config.studio_handoff_flow_sid:
-        return None
     try:
         return create_studio_handoff_tool(
             tac,
-            context,
+            session,
             attributes={"department": "billing"},
-            name="connect_to_human_agent",
+            name=HUMAN_HANDOFF_TOOL,
             description=(
                 "Transfer this call to a live human agent. Use when the "
                 "customer asks for a person or you cannot resolve their issue."
@@ -202,49 +231,71 @@ def get_handoff_tool(context: ConversationSession) -> TACTool | None:
         return None
 
 
+async def tools_for(session: ConversationSession) -> list[TACTool]:
+    """Assemble the tools the agent may call on this conversation.
+
+    Args:
+        session: The conversation being served; its channel decides the set.
+
+    Returns:
+        The tools available on this channel. The payment link and the handoff are
+        voice-only — an SMS replier already has the link, and Studio handoff has
+        no messaging path — and anything unprovisioned in Twilio is left out.
+    """
+    voice_only = (
+        [payment_link_tool_for(session), handoff_tool_for(session)]
+        if session.channel == VOICE_CHANNEL
+        else []
+    )
+    return [tool for tool in (*voice_only, await knowledge_tool()) if tool]
+
+
+def publish_tool_call(tool_name: str) -> None:
+    """Announce a tool call on the live feed.
+
+    The handoff gets a second, louder line: that is the moment the landing page's
+    softphone is about to ring.
+
+    Args:
+        tool_name: The tool llm.run_turn is invoking.
+    """
+    events.publish("tool", f"Agent used tool: {tool_name}")
+    if tool_name == HUMAN_HANDOFF_TOOL:
+        events.publish("handoff", "Transferring to a human — your browser will ring!")
+
+
 conversation_history: dict[str, llm.History] = {}
 
 
 async def handle_message_ready(
     user_message: str,
-    context: ConversationSession,
+    session: ConversationSession,
     _memory_response: TACMemoryResponse | None,
 ) -> str:
-    """Run one LLM turn; the returned string is spoken or texted back.
+    """Answer one transcribed utterance or one inbound SMS.
 
-    TAC calls this with each transcribed utterance (voice) or inbound SMS body.
-    _memory_response is always None because both channels use the default
-    memory_mode="never", so conversation_history carries context instead.
-    The payment link and handoff are voice-only: an SMS replier already has the
-    link, and Studio handoff has no messaging path.
+    Args:
+        user_message: What the customer just said or texted.
+        session: The conversation it arrived on; its channel picks the prompt and
+            the tools.
+        _memory_response: Always None — both channels use the default
+            memory_mode="never", so conversation_history carries the thread
+            instead.
+
+    Returns:
+        The agent's reply, which TAC speaks or texts back.
     """
     events.publish("caller_said", f"Customer: {user_message}")
 
-    on_voice = context.channel == "VOICE"
-
-    tools: list[TACTool] = []
-    if on_voice:
-        tools.append(create_send_payment_link_tool(context))
-        handoff_tool = get_handoff_tool(context)
-        if handoff_tool:
-            tools.append(handoff_tool)
-    knowledge_tool = await get_knowledge_tool()
-    if knowledge_tool:
-        tools.append(knowledge_tool)
-
-    def on_tool_call(tool_name: str) -> None:
-        events.publish("tool", f"Agent used tool: {tool_name}")
-        if tool_name == "connect_to_human_agent":
-            events.publish("handoff", "Transferring to a human — your browser will ring!")
-
+    on_voice = session.channel == VOICE_CHANNEL
     reply, history = await llm.run_turn(
         user_message=user_message,
-        history=conversation_history.get(context.conversation_id, []),
+        history=conversation_history.get(session.conversation_id, []),
         instructions=VOICE_INSTRUCTIONS if on_voice else SMS_INSTRUCTIONS,
-        tools=tools,
-        on_tool_call=on_tool_call,
+        tools=await tools_for(session),
+        on_tool_call=publish_tool_call,
     )
-    conversation_history[context.conversation_id] = history
+    conversation_history[session.conversation_id] = history
 
     events.publish("agent_said", f"Ava: {reply}")
     return reply
@@ -258,6 +309,9 @@ async def on_call_status(event: CallStatusEvent) -> None:
 
     Registering this handler is also what makes TAC attach the status callback
     URL to the outbound call.
+
+    Args:
+        event: Twilio's status callback, as parsed by the voice channel.
     """
     events.publish("call_status", f"Call {event.call_status}", call_sid=event.call_sid)
 
@@ -268,8 +322,12 @@ voice_channel.on_call_status(on_call_status)
 async def start_reminder_call(to_number: str) -> str:
     """Place the reminder call, triggered by POST /api/call.
 
-    status_callback_event is listed out because Twilio otherwise reports only
-    "completed".
+    Args:
+        to_number: The customer's number in E.164.
+
+    Returns:
+        The new call's SID. status_callback_event is listed out because Twilio
+        otherwise reports only "completed".
     """
     result = await voice_channel.initiate_outbound_conversation(
         InitiateVoiceConversationOptions(

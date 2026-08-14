@@ -16,6 +16,7 @@ only serve the demo UI and glue:
 
 import os
 from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -30,36 +31,73 @@ import events
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-# The Twilio Client identity the landing page registers as, and /handoff dials.
 BROWSER_AGENT_IDENTITY = "browser-agent"
 
-# link_id -> {"to": phone, "clicked": bool}
-PAYMENT_LINKS: dict[str, dict[str, Any]] = {}
+
+@dataclass
+class PaymentLink:
+    """A payment link that was texted, and whether the customer opened it."""
+
+    to: str
+    clicked: bool = False
+
+
+PAYMENT_LINKS: dict[str, PaymentLink] = {}
 
 
 class CallRequest(BaseModel):
     phone: str
 
 
+def dialing_allowlist() -> list[str]:
+    """Read the numbers this deployment is allowed to call.
+
+    Returns:
+        Exact-match E.164 numbers from DEMO_ALLOWED_NUMBERS (comma-separated),
+        or an empty list, which permits any number. POST /api/call has no auth
+        and every call it places is real and billed, so a deployment on a stable
+        public URL should set it.
+    """
+    return [n.strip() for n in os.getenv("DEMO_ALLOWED_NUMBERS", "").split(",") if n.strip()]
+
+
 def create_router(
     start_call: Callable[[str], Awaitable[str]],
     tac_config: Any,
 ) -> APIRouter:
+    """Build the landing page's routes.
+
+    Args:
+        start_call: Places the reminder call and returns its SID — this is
+            app.start_reminder_call, passed in because app.py imports this
+            module, not the other way round.
+        tac_config: TAC's resolved config, read for the account SID, API key
+            pair, auth token and phone number the Twilio-facing routes need.
+
+    Returns:
+        A router carrying only the demo's UI and glue; TAC owns the webhooks.
+    """
     router = APIRouter()
 
     @router.get("/", include_in_schema=False)
     async def index() -> FileResponse:
+        """Serve the landing page, which opens the feed and the softphone."""
         return FileResponse(STATIC_DIR / "index.html")
 
     @router.post("/api/call")
     async def trigger_call(body: CallRequest) -> dict[str, str]:
         """Place the reminder call to the number the page submitted.
 
-        The route has no auth and every call is real and billed, so
-        DEMO_ALLOWED_NUMBERS (comma-separated E.164, exact match) caps who can be
-        dialed on a public deployment; unset means any number.
+        Args:
+            body: The customer's number in E.164.
+
+        Returns:
+            The new call's SID.
+
+        Raises:
+            HTTPException: 403 when the number is not on the allowlist.
         """
-        allowed = [n.strip() for n in os.getenv("DEMO_ALLOWED_NUMBERS", "").split(",") if n.strip()]
+        allowed = dialing_allowlist()
         if allowed and body.phone.strip() not in allowed:
             raise HTTPException(403, "Number not in DEMO_ALLOWED_NUMBERS.")
 
@@ -68,13 +106,16 @@ def create_router(
 
     @router.get("/events")
     async def sse_stream() -> StreamingResponse:
+        """Stream the live feed — one events.subscribe() queue per browser."""
         return StreamingResponse(events.subscribe(), media_type="text/event-stream")
 
     @router.get("/token")
     async def voice_token() -> dict[str, str]:
         """Mint the Voice JS access token the landing page registers with.
 
-        incoming_allow is what lets /handoff's <Dial><Client> ring the page.
+        Returns:
+            The JWT and the identity it was minted for. incoming_allow is what
+            lets /handoff's <Dial><Client> ring the page.
         """
         token = AccessToken(
             tac_config.account_sid,
@@ -93,11 +134,17 @@ def create_router(
     async def handoff(request: Request) -> Response:
         """Transfer the still-live call to the browser softphone.
 
-        app.py points default_twiml_options.action_url here. Twilio requests it
-        whenever a ConversationRelay session ends, not only on a handoff, so we
-        dial only when HandoffData is present — otherwise a dropped websocket
-        would ring the browser unprompted. callerId must be a number this account
-        owns.
+        app.py points default_twiml_options.action_url here.
+
+        Args:
+            request: Twilio's POST to that action URL. Twilio sends it whenever a
+                ConversationRelay session ends, not only on a handoff, so the
+                dial happens only when HandoffData is present — otherwise a
+                dropped websocket would ring the browser unprompted.
+
+        Returns:
+            TwiML dialing BROWSER_AGENT_IDENTITY, or a hangup. callerId must be a
+            number this account owns.
         """
         form = await request.form()
         if form.get("HandoffData"):
@@ -116,10 +163,19 @@ def create_router(
 
     @router.get("/pay/{link_id}", include_in_schema=False)
     async def payment_link(link_id: str) -> HTMLResponse:
-        info = PAYMENT_LINKS.get(link_id)
-        if info:
-            info["clicked"] = True
-            events.publish("link_clicked", f"Customer opened the payment link ({info['to']})")
+        """Record the click and show the stand-in payment page.
+
+        Args:
+            link_id: The id minted by app._mint_tracked_link. An id this process
+                never minted still gets the page, just no feed line.
+
+        Returns:
+            The demo payment page.
+        """
+        link = PAYMENT_LINKS.get(link_id)
+        if link:
+            link.clicked = True
+            events.publish("link_clicked", f"Customer opened the payment link ({link.to})")
         return HTMLResponse(
             """
             <html><body style="font-family:sans-serif;text-align:center;padding-top:12vh">
