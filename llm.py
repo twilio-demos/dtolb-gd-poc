@@ -95,6 +95,69 @@ def _as_response(result: object) -> dict[str, object]:
     return {"result": _jsonable(result)}
 
 
+def _user_turn(text: str) -> types.Content:
+    """Wrap a customer utterance as one conversation turn.
+
+    Args:
+        text: What the customer said or texted.
+    """
+    return types.Content(role="user", parts=[types.Part.from_text(text=text)])
+
+
+async def _generate(
+    contents: History, instructions: str, tools: list[TACTool]
+) -> types.GenerateContentResponse:
+    """Ask Gemini for the next turn.
+
+    Args:
+        contents: The conversation so far, ending with the turn to answer.
+        instructions: The system instruction for this channel.
+        tools: The tools the model may call.
+    """
+    return await _get_client().aio.models.generate_content(
+        model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=instructions,
+            tools=[_declare(tools)] if tools else None,
+            thinking_config=types.ThinkingConfig(thinking_budget=0),
+        ),
+    )
+
+
+def _model_turn(response: types.GenerateContentResponse) -> types.Content | None:
+    """Return the model's turn, or None when it produced nothing usable.
+
+    Args:
+        response: What _generate returned.
+    """
+    candidate = response.candidates[0].content if response.candidates else None
+    return candidate if candidate and candidate.parts else None
+
+
+async def _tool_results(
+    response: types.GenerateContentResponse,
+    tools: list[TACTool],
+    on_tool_call: Callable[[str], None],
+) -> types.Content:
+    """Run every tool the model asked for and package the results as one turn.
+
+    Args:
+        response: The model turn carrying the function calls.
+        tools: The tools this turn may call.
+        on_tool_call: Notified with each tool name as it is invoked.
+    """
+    by_name = {tool.name: tool for tool in tools}
+    parts: list[types.Part] = []
+    for call in response.function_calls or []:
+        on_tool_call(call.name)
+        result = await by_name[call.name](**(call.args or {}))
+        parts.append(
+            types.Part.from_function_response(name=call.name, response=_as_response(result))
+        )
+    return types.Content(role="user", parts=parts)
+
+
 async def run_turn(
     *,
     user_message: str,
@@ -112,44 +175,24 @@ async def run_turn(
         tools: The tools the model may call.
         on_tool_call: Notified with each tool name as it is invoked.
     """
-    by_name = {tool.name: tool for tool in tools}
-    contents: History = [
-        *history,
-        types.Content(role="user", parts=[types.Part.from_text(text=user_message)]),
-    ]
-    config = types.GenerateContentConfig(
-        system_instruction=instructions,
-        tools=[_declare(tools)] if tools else None,
-        thinking_config=types.ThinkingConfig(thinking_budget=0),
-    )
-    model = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
+    gave_up = (_FALLBACK_REPLY, history)
+    contents: History = [*history, _user_turn(user_message)]
 
     try:
         for _ in range(MAX_TOOL_ROUNDS):
-            response = await _get_client().aio.models.generate_content(
-                model=model, contents=contents, config=config
-            )
+            response = await _generate(contents, instructions, tools)
 
-            candidate = response.candidates[0].content if response.candidates else None
-            if candidate is None or not candidate.parts:
-                return _FALLBACK_REPLY, history
-            contents.append(candidate)
+            reply = _model_turn(response)
+            if reply is None:
+                return gave_up
+            contents.append(reply)
 
             if not response.function_calls:
                 return response.text or _FALLBACK_REPLY, contents
 
-            parts = []
-            for call in response.function_calls:
-                on_tool_call(call.name)
-                result = await by_name[call.name](**(call.args or {}))
-                parts.append(
-                    types.Part.from_function_response(
-                        name=call.name, response=_as_response(result)
-                    )
-                )
-            contents.append(types.Content(role="user", parts=parts))
+            contents.append(await _tool_results(response, tools, on_tool_call))
     except Exception as exc:
         print(f"LLM turn failed: {exc}")
-        return _FALLBACK_REPLY, history
+        return gave_up
 
-    return _FALLBACK_REPLY, history
+    return gave_up
