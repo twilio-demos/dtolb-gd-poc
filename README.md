@@ -1,5 +1,11 @@
 # TAC Payment Reminder Demo
 
+## Google Vertex Gemini Branch
+
+📝 Please see the [ᛅ gemini-vertex branch](github.com:twilio-demos/dtolb-gd-poc/tree/gemini-vertex).
+
+## About
+
 A small, readable demo of the [Twilio Agent Connect (TAC) Python SDK](https://github.com/twilio/twilio-agent-connect-python):
 an AI agent **calls a customer** to remind them to update their payment
 information, while a landing page watches the whole call live.
