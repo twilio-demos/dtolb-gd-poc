@@ -2,7 +2,7 @@
 
 ## Google Vertex Gemini Branch
 
-📝 Please see the [ᛅ gemini-vertex branch](github.com:twilio-demos/dtolb-gd-poc/tree/gemini-vertex).
+📝 Please see the [ᛅ gemini-vertex branch](github.com/twilio-demos/dtolb-gd-poc/tree/gemini-vertex).
 
 ## About
 
